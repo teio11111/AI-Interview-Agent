@@ -13,6 +13,8 @@ class Candidate(BaseModel):
     ai_analysis = db.Column(db.Text, comment='AI 分析结果 JSON')
     match_score = db.Column(db.Integer, comment='匹配度评分（0-100）')
     notes = db.Column(db.Text, nullable=True, comment='管理员备注')
+    meta_evaluation = db.Column(db.Text, nullable=True, comment='综合元评估结果 JSON')
+    meta_eval_round_count = db.Column(db.Integer, nullable=True, default=0, comment='综合元评估时包含的面试轮次数')
 
     # 关联
     position = db.relationship('Position', backref=db.backref('candidates', cascade='all, delete-orphan'))
@@ -26,5 +28,7 @@ class Candidate(BaseModel):
             'ai_analysis': self.ai_analysis,
             'match_score': self.match_score,
             'notes': self.notes,
+            'meta_evaluation': self.meta_evaluation,
+            'meta_eval_round_count': self.meta_eval_round_count or 0,
             'created_at': self._datetime_str(self.created_at)
         }

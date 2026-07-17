@@ -20,11 +20,40 @@ class InterviewService:
     """面试服务（编排层）
     
     所有业务逻辑委托给 AgentOrchestrator，保持 API 路由不变。
+    支持 on_progress 回调用于 SSE 实时推送。
     """
 
     @staticmethod
-    def generate_questions(position, candidate, position_analysis, resume_analysis, resume_text=None):
-        """生成面试问题（委托给出题官 Agent）
+    def analyze_position(position_name, tech_requirements, jd_content, on_progress=None):
+        """岗位分析（委托给岗位分析师 Agent）
+
+        Returns:
+            dict: 岗位分析结果，失败返回 None
+        """
+        orch = get_orchestrator()
+        return orch.analyze_position(position_name, tech_requirements, jd_content,
+                                     on_progress=on_progress)
+
+    @staticmethod
+    def evaluate_resume(position_name, tech_requirements, jd_content,
+                        resume_text, position_analysis=None, candidate_name='',
+                        on_progress=None):
+        """简历评估（委托给多智能体协作评估）
+
+        Returns:
+            dict: 简历评估结果，失败返回 None
+        """
+        orch = get_orchestrator()
+        return orch.evaluate_resume(
+            position_name, tech_requirements, jd_content,
+            resume_text, position_analysis, candidate_name,
+            on_progress=on_progress
+        )
+
+    @staticmethod
+    def generate_questions(position, candidate, position_analysis, resume_analysis,
+                           resume_text=None, on_progress=None):
+        """生成面试问题（委托给多智能体出题协作）
 
         Args:
             position: Position 模型
@@ -32,6 +61,7 @@ class InterviewService:
             position_analysis: 岗位分析结果 (dict 或 str)
             resume_analysis: 简历评估结果 (dict 或 str)
             resume_text: 候选人简历原文
+            on_progress: 进度回调
 
         Returns:
             dict: 问题列表，失败返回 None
@@ -42,12 +72,14 @@ class InterviewService:
             position.tech_requirements or '',
             position_analysis,
             resume_analysis,
-            resume_text or candidate.resume_text or ''
+            resume_text or candidate.resume_text or '',
+            on_progress=on_progress
         )
 
     @staticmethod
-    def get_dialog_feedback(candidate_name, position_name, resume_text, dialog_history, question, answer):
-        """获取面试问答反馈（委托给面试官 Agent）
+    def get_dialog_feedback(candidate_name, position_name, resume_text,
+                            dialog_history, question, answer, on_progress=None):
+        """获取面试问答反馈（委托给多智能体面试协作）
 
         Returns:
             dict: 反馈结果，失败返回 None
@@ -55,12 +87,13 @@ class InterviewService:
         orch = get_orchestrator()
         return orch.evaluate_dialog(
             candidate_name, position_name, resume_text,
-            dialog_history, question, answer
+            dialog_history, question, answer,
+            on_progress=on_progress
         )
 
     @staticmethod
     def generate_follow_up(resume_text, dialog_chain):
-        """生成连续追问（委托给面试官 Agent）
+        """生成连续追问（委托给主面试官 Agent）
 
         Returns:
             dict: 追问结果，失败返回 None
@@ -69,17 +102,19 @@ class InterviewService:
         return orch.generate_follow_up(resume_text, dialog_chain)
 
     @staticmethod
-    def generate_report(position, candidate_name, full_dialogs_text, resume_analysis=None):
-        """生成评价报告（委托给评价官 Agent）
+    def generate_report(position, candidate_name, full_dialogs_text,
+                        questions_plan=None, on_progress=None):
+        """生成本轮面试评价报告（委托给 3+1 多智能体）
 
         Args:
             position: Position 模型
             candidate_name: 候选人姓名
             full_dialogs_text: 全部对话文本
-            resume_analysis: 简历评估结果（可选，用于交叉验证）
+            questions_plan: 出题策略（可选）
+            on_progress: 进度回调
 
         Returns:
-            dict: 评价报告，失败返回 None
+            dict: 面试评价报告，失败返回 None
         """
         orch = get_orchestrator()
         return orch.generate_report(
@@ -87,5 +122,6 @@ class InterviewService:
             position.tech_requirements or '',
             candidate_name,
             full_dialogs_text,
-            resume_analysis
+            questions_plan=questions_plan,
+            on_progress=on_progress
         )

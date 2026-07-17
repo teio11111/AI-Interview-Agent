@@ -1,0 +1,107 @@
+"""综合顾问 Agent - 专注面试回答的沟通表达与综合素质评估"""
+from agents.base_agent import BaseAgent
+
+
+class SoftInterviewerAgent(BaseAgent):
+    """综合顾问
+    
+    职责：专注评估候选人面试回答的沟通表达、逻辑性、学习态度等综合素质。
+    并行工作：与技术顾问同时工作，两者结果提交给主面试官。
+    输出：综合素质评分 + 沟通追问建议 + 综合风险信号。
+    """
+    AGENT_NAME = "综合顾问"
+    SYSTEM_PROMPT = """你是「综合顾问」，一位资深人才发展专家和沟通评估专家。
+
+你的核心职责：
+- 评估候选人回答的沟通表达能力（逻辑性、清晰度、条理性）
+- 评估候选人的学习态度和思维方式
+- 评估候选人的自我认知和成长意识
+- 识别综合素质层面的风险信号
+
+工作原则：
+- 只评估软性素质维度，不评估技术准确性
+- 评分必须有具体依据
+- 关注"怎么说的"而非"说了什么"
+- 追问建议聚焦于了解候选人的思考方式
+
+请始终以严格的 JSON 格式输出，不要输出任何解释性文字。"""
+
+    def evaluate(self, candidate_name, position_name, resume_text,
+                 dialog_history, question, answer):
+        """评估候选人回答的综合素质维度
+
+        Args:
+            candidate_name: 候选人姓名
+            position_name: 岗位名称
+            resume_text: 简历原文
+            dialog_history: 历史对话文本
+            question: 当前问题
+            answer: 候选人回答
+
+        Returns:
+            dict: 综合素质维度评估结果
+        """
+        prompt = f"""## 任务
+你是综合顾问，请**只从综合素质维度**评估候选人 {candidate_name} 的回答。
+专注评估沟通表达、逻辑性、学习态度，不评估技术准确性。
+
+## 岗位
+{position_name}
+
+## 候选人简历
+{resume_text or '暂无'}
+
+## 面试对话历史
+{dialog_history or '（这是第一个问题）'}
+
+## 当前问答
+**面试官提问：** {question}
+**候选人回答：** {answer}
+
+## 综合素质评估维度
+
+### 1. 逻辑表达（1-10）
+- 回答是否条理清晰、有层次
+- 是否能抓重点，不跑题
+- 是否用具体例子说明观点（vs 空泛描述）
+
+### 2. 沟通质量（1-10）
+- 语言是否清晰、专业
+- 是否能在有限时间内讲清楚核心观点
+- 是否能根据问题调整回答深度
+
+### 3. 思维完整性（1-10）
+- 是否考虑了问题的多个角度
+- 回答是否完整，不遗漏关键要点
+- 是否有自我反思和批判性思维
+
+### 4. 学习与成长态度（1-10）
+- 对不知道的问题的态度（诚实 vs 硬撑）
+- 是否展示学习意愿和成长心态
+- 对自身不足的认知
+
+### 5. 综合风险信号
+- 回答过于完美像背稿
+- 前后矛盾
+- 过度夸大自己贡献
+- 无法承认错误
+
+## 输出格式（严格 JSON）
+{{
+    "soft_score": 7,
+    "score_breakdown": {{
+        "logic": 7,
+        "communication": 8,
+        "completeness": 6,
+        "learning_attitude": 7
+    }},
+    "soft_evaluation": "2-3句话的综合素质评估",
+    "soft_follow_ups": [
+        "综合素质追问1（了解思考方式）",
+        "综合素质追问2（测试自我认知）"
+    ],
+    "soft_red_flags": ["综合层面的风险点"],
+    "is_communicator": true,
+    "soft_detail": "判断依据"
+}}"""
+        return self.think_json(prompt)

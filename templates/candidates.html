@@ -9,7 +9,7 @@
     </button>
 </div>
 
-<!-- 岗位筛选 + 搜索 -->
+<!-- 岗位筛选 + 搜索 + 排序 -->
 <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
     <div class="d-flex gap-2 flex-wrap flex-grow-1" id="positionFilters">
         <button class="btn btn-sm btn-primary active" onclick="filterPosition('all', this)">
@@ -20,6 +20,11 @@
         <span class="input-group-text"><i class="bi bi-search"></i></span>
         <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索候选人姓名" oninput="onSearch(this.value)" onchange="onSearch(this.value)">
     </div>
+    <select class="form-select form-select-sm" id="sortSelect" style="width:160px;" onchange="changeSort(this.value)">
+        <option value="match">按匹配度排序</option>
+        <option value="interview">按面试分排序</option>
+        <option value="meta" selected>按综合元评估排序</option>
+    </select>
 </div>
 
 <!-- 按岗位分组的候选人列表 -->
@@ -97,6 +102,19 @@
     </div>
 </div>
 
+<!-- 综合元评估弹窗 -->
+<div class="modal fade" id="metaEvalModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><span class="badge badge-ai me-2"><i class="bi bi-robot"></i> AI</span>综合元评估报告</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="metaEvalResult"></div>
+        </div>
+    </div>
+</div>
+
 <!-- 候选人对比弹窗 -->
 <div class="modal fade" id="compareModal" tabindex="-1">
     <div class="modal-dialog modal-xl">
@@ -135,6 +153,7 @@ let positionsData = [];
 let candidatesCache = [];
 let sessionsCache = [];
 let activeFilter = 'all';
+let activeSortMode = 'meta';  // match | interview | meta
 let searchKeyword = '';
 let selectedSet = new Map(); // id -> {name, position_id}
 
@@ -142,6 +161,43 @@ function onSearch(val) {
     searchKeyword = val.trim().toLowerCase();
     renderCandidates();
 }
+
+function changeSort(mode) {
+    activeSortMode = mode;
+    renderCandidates();
+}
+
+function getSortScore(c) {
+    if (activeSortMode === 'meta') {
+        if (!c.meta_evaluation) return 0;
+        try {
+            const m = typeof c.meta_evaluation === 'string' ? JSON.parse(c.meta_evaluation) : c.meta_evaluation;
+            return m.overall_score || 0;
+        } catch { return 0; }
+    }
+    if (activeSortMode === 'interview') {
+        const cSessions = sessionsCache.filter(s => s.candidate_id === c.id && s.status === 'completed');
+        if (cSessions.length > 0) {
+            const latest = cSessions.sort((a,b) => (b.id||0)-(a.id||0))[0];
+            try {
+                const r = typeof latest.report === 'string' ? JSON.parse(latest.report) : latest.report;
+                return r ? (r.overall_score || 0) : 0;
+            } catch { return 0; }
+        }
+        return 0;
+    }
+    return c.match_score || 0;
+}
+
+function hasSortData(c) {
+    if (activeSortMode === 'meta') return !!c.meta_evaluation;
+    if (activeSortMode === 'interview') {
+        return sessionsCache.some(s => s.candidate_id === c.id && s.status === 'completed' && s.report);
+    }
+    return !!c.match_score;
+}
+
+const sortModeLabels = { match: '匹配度', interview: '面试分', meta: '综合元评估' };
 
 async function loadPositions() {
     const res = await apiCall('/api/positions');
@@ -203,9 +259,13 @@ function renderCandidates() {
         grouped[pid].push(c);
     });
     
-    // 组内按匹配度降序排序
+    // 组内按当前排序模式降序排序（无主数据时用匹配度兜底）
     Object.values(grouped).forEach(arr => {
-        arr.sort((a, b) => (b.match_score || 0) - (a.match_score || 0));
+        arr.sort((a, b) => {
+            const diff = getSortScore(b) - getSortScore(a);
+            if (diff !== 0) return diff;
+            return (b.match_score || 0) - (a.match_score || 0);
+        });
     });
     
     // 筛选
@@ -238,7 +298,7 @@ function renderCandidates() {
                     <strong>${posName}</strong>
                     <span class="badge bg-secondary ms-2">${cands.length} 人</span>
                 </div>
-                <small class="text-muted">按匹配度排序</small>
+                <small class="text-muted">按${sortModeLabels[activeSortMode] || '匹配度'}排序</small>
             </div>
             <div class="card-body p-0">
                 <table class="table table-hover mb-0">
@@ -287,13 +347,35 @@ function renderCandidates() {
                             return `
                             <tr>
                                 <td><input type="checkbox" class="form-check-input" ${checked} onchange="toggleSelect(${c.id}, '${c.name}', ${c.position_id})" onclick="event.stopPropagation()"></td>
-                                <td><span class="badge bg-${i === 0 && c.match_score >= 70 ? 'success' : 'light'} text-${i === 0 && c.match_score >= 70 ? '' : 'muted'}">${i + 1}</span></td>
-                                <td><strong>${c.name}</strong></td>
+                                <td><span class="badge bg-${i === 0 && getSortScore(c) >= 70 ? 'success' : 'light'} text-${i === 0 && getSortScore(c) >= 70 ? '' : 'muted'}">${i + 1}</span></td>
+                                <td><strong>${c.name}</strong>${activeSortMode !== 'match' && hasSortData(c) ? `<small class="badge bg-info ms-1" style="font-size:0.65rem;">${sortModeLabels[activeSortMode]} ${getSortScore(c)}</small>` : activeSortMode !== 'match' && !hasSortData(c) ? '<small class="text-muted ms-1" style="font-size:0.65rem;">未评估</small>' : ''}</td>
                                 <td>${matchBadge}</td>
                                 <td>${statusHtml}</td>
                                 <td><a href="#" onclick="editNotes(${c.id}, event)" class="text-decoration-none small">${notesDisplay} <i class="bi bi-pencil-square text-muted" style="font-size:0.7rem;"></i></a></td>
                                 <td>${aiBtn}</td>
                                 <td>
+                                    ${(() => {
+                                        const completedCount = cSessions.filter(s => s.status === 'completed').length;
+                                        const hasMeta = !!c.meta_evaluation;
+                                        const lastRoundCount = c.meta_eval_round_count || 0;
+                                        const hasNewRounds = completedCount > lastRoundCount;
+                                        let btns = '';
+                                        // 查看按钮：已有评估结果时显示
+                                        if (hasMeta) {
+                                            btns += `<button class="btn btn-sm btn-outline-info me-1" onclick="viewMetaEval(${c.id}, '${c.name}')" title="查看综合元评估"><i class="bi bi-eye"></i></button>`;
+                                        }
+                                        // 评估/重新评估按钮：
+                                        // 1. 从未评估过但有已完成面试 → 首次评估
+                                        // 2. 已评估过但有新增面试轮次 → 重新评估
+                                        if (c.ai_analysis && cSessions.some(s => s.status === 'completed')) {
+                                            if (!hasMeta) {
+                                                btns += `<button class="btn btn-sm btn-outline-success me-1" onclick="runMetaEval(${c.id}, '${c.name}', this)" title="综合元评估"><i class="bi bi-diagram-3"></i></button>`;
+                                            } else if (hasNewRounds) {
+                                                btns += `<button class="btn btn-sm btn-outline-warning me-1 position-relative" onclick="runMetaEval(${c.id}, '${c.name}', this)" title="有新面试轮次，重新综合元评估"><i class="bi bi-arrow-clockwise"></i><span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:0.55rem;">${completedCount - lastRoundCount}</span></button>`;
+                                            }
+                                        }
+                                        return btns;
+                                    })()}
                                     <button class="btn btn-sm btn-outline-info me-1" onclick="viewResume(${c.id})"><i class="bi bi-file-text"></i></button>
                                     <button class="btn btn-sm btn-outline-danger" onclick="deleteCandidate(${c.id})"><i class="bi bi-trash"></i></button>
                                 </td>
@@ -385,21 +467,15 @@ async function createCandidate() {
 }
 
 async function analyzeCandidate(id, btn) {
-    showAiLoading('AI 正在分析候选人简历...', '正在评估技能匹配度与岗位适配性，请稍候');
-    try {
-        const res = await apiCall(`/api/candidates/${id}/analyze`, 'POST');
-        hideAiLoading();
-        if (res.code === 200) {
+    consumeSSE(`/api/stream/candidate-analysis/${id}`, {
+        initialMsg: 'AI 正在分析候选人简历...',
+        initialSub: '正在评估技能匹配度与岗位适配性，请稍候',
+        async onComplete(payload) {
+            await loadCandidates();
             showToast('AI 分析完成，面试会话已自动生成', 'success');
-            showAiResult(res.data.analysis, res.data.session);
-            loadCandidates();
-        } else {
-            showToast(res.message, 'danger');
+            showAiResult(payload.result, payload.session);
         }
-    } catch(e) {
-        hideAiLoading();
-        showToast('网络错误', 'danger');
-    }
+    });
 }
 
 function showAiResult(analysis, session) {
@@ -619,6 +695,164 @@ async function deleteCandidate(id) {
     } else {
         showToast(res.message, 'danger');
     }
+}
+
+// === 综合元评估 ===
+
+// 查看已有综合元评估
+async function viewMetaEval(id, name) {
+    try {
+        const res = await apiCall(`/api/candidates/${id}/meta-evaluation`);
+        if (res.code === 200) {
+            showMetaEvalResult(res.data.evaluation, name);
+        } else {
+            showToast(res.message || '无评估数据', 'warning');
+        }
+    } catch(e) {
+        showToast('网络错误', 'danger');
+    }
+}
+
+// 执行综合元评估（SSE 流式）
+async function runMetaEval(id, name, btn) {
+    if (!confirm(`确定对「${name}」进行综合元评估？\n将汇总简历评估+所有面试报告生成最终决策。`)) return;
+    
+    consumeSSE(`/api/stream/meta-evaluation/${id}`, {
+        initialMsg: 'AI 正在进行综合元评估...',
+        initialSub: '正在汇总岗位分析、简历评估与各轮面试数据，请稍候',
+        async onComplete(payload) {
+            await loadCandidates();
+            showToast('综合元评估完成', 'success');
+            showMetaEvalResult(payload.result, name);
+        }
+    });
+}
+
+function showMetaEvalResult(data, name) {
+    const score = data.overall_score || 0;
+    const scoreColor = score >= 70 ? 'success' : score >= 50 ? 'warning' : 'danger';
+    const recMap = {
+        '强烈推荐': 'success', '推荐': 'primary', '有条件推荐': 'warning',
+        '不推荐': 'danger', '强烈不推荐': 'danger'
+    };
+    const rec = data.final_recommendation || '未评估';
+    const recColor = recMap[rec] || 'secondary';
+    const dims = data.dimension_scores || {};
+
+    const crossAnalysis = data.cross_stage_analysis || {};
+    const consistency = crossAnalysis.consistency_findings || [];
+    const validated = crossAnalysis.validated_conclusions || [];
+    const alerts = crossAnalysis.inconsistency_alerts || [];
+    const multiRound = data.multi_round_tracking || {};
+
+    document.getElementById('metaEvalResult').innerHTML = `
+        <div class="text-center mb-4">
+            <div class="badge bg-${scoreColor} score-badge p-3" style="font-size:1.5rem;">${score} 分</div>
+            <div class="mt-2">
+                <span class="badge bg-${recColor} p-2" style="font-size:1rem;">${rec}</span>
+            </div>
+            <p class="text-muted mt-2 mb-0">${data.decision_rationale || ''}</p>
+        </div>
+
+        <h6 class="mb-3"><i class="bi bi-bar-chart me-1 text-primary"></i>五维最终评分</h6>
+        <div class="row g-2 mb-4">
+            ${Object.entries(dims).map(([k, v]) => {
+                const labelMap = {technical_ability:'技术能力', project_experience:'项目经验', system_design:'系统设计', communication:'沟通表达', learning_potential:'学习潜力'};
+                return `<div class="col-6 col-md">
+                    <div class="p-2 bg-white rounded text-center border">
+                        <small class="text-muted d-block">${labelMap[k] || k}</small>
+                        <strong class="${v >= 7 ? 'text-success' : v >= 5 ? 'text-warning' : 'text-danger'}">${v}/10</strong>
+                    </div>
+                </div>`;
+            }).join('')}
+        </div>
+
+        <div class="row g-3 mb-4">
+            <div class="col-md-6">
+                <h6><i class="bi bi-star text-success me-1"></i>核心优势</h6>
+                <ul class="small">${(data.key_strengths || []).map(s => {
+                    if (typeof s === 'string') return `<li>${s}</li>`;
+                    return `<li><strong>${s.point}</strong>${s.evidence ? `<br><small class="text-muted">证据: ${s.evidence}</small>` : ''}${s.relevance ? `<br><small class="text-info">岗位相关性: ${s.relevance}</small>` : ''}</li>`;
+                }).join('')}</ul>
+            </div>
+            <div class="col-md-6">
+                <h6><i class="bi bi-exclamation-triangle text-danger me-1"></i>关键风险</h6>
+                <ul class="small">${(data.key_risks || []).map(r => {
+                    if (typeof r === 'string') return `<li>${r}</li>`;
+                    const sevCls = r.severity === '高' ? 'danger' : r.severity === '中' ? 'warning' : 'secondary';
+                    return `<li><span class="badge bg-${sevCls} me-1">${r.severity || ''}</span><strong>${r.risk}</strong>${r.evidence ? `<br><small class="text-muted">证据: ${r.evidence}</small>` : ''}${r.mitigation ? `<br><small class="text-success">规避: ${r.mitigation}</small>` : ''}</li>`;
+                }).join('')}</ul>
+            </div>
+        </div>
+
+        ${consistency.length > 0 ? `
+        <h6 class="mb-3"><i class="bi bi-arrow-left-right text-primary me-1"></i>跨阶段交叉验证</h6>
+        <div class="table-responsive mb-4">
+            <table class="table table-sm table-bordered" style="font-size:0.85rem;">
+                <thead class="table-dark">
+                    <tr><th>简历/评估结论</th><th>面试表现</th><th>判定</th><th>影响</th></tr>
+                </thead>
+                <tbody>
+                    ${consistency.map(c => {
+                        const verdictCls = c.verdict === '一致' ? 'success' : c.verdict === '不一致' ? 'danger' : 'warning';
+                        return `<tr>
+                            <td>${c.claim || '-'}</td>
+                            <td>${c.interview_evidence || '-'}</td>
+                            <td class="text-center"><span class="badge bg-${verdictCls}">${c.verdict || '-'}</span></td>
+                            <td class="text-muted">${c.impact || ''}</td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>
+        ` : ''}
+
+        ${multiRound.round_summary ? `
+        <h6 class="mb-3"><i class="bi bi-collection text-info me-1"></i>多轮面试追踪</h6>
+        <div class="row g-2 mb-3">
+            ${(multiRound.round_summary || []).map(r => `
+                <div class="col-md">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold">第${r.round}轮 <small class="text-muted">${r.focus || ''}</small></div>
+                        <div>评分: <strong>${r.score || '?'}分</strong></div>
+                        <div class="text-muted">${r.key_findings || ''}</div>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+        <div class="small text-muted mb-3">
+            进步趋势: <strong>${multiRound.progression || '-'}</strong> | ${multiRound.progression_detail || ''}
+        </div>
+        ` : ''}
+
+        ${data.onboarding_suggestions ? `
+        <h6 class="mb-3"><i class="bi bi-calendar-check text-success me-1"></i>入职建议</h6>
+        <div class="row g-2 mb-4">
+            <div class="col-md-6">
+                <div class="p-2 bg-white rounded small border">
+                    <div class="fw-bold mb-1">入职后关注点</div>
+                    <div>${data.onboarding_suggestions.if_hired || '-'}</div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="p-2 bg-white rounded small border">
+                    <div class="fw-bold mb-1">前 90 天建议</div>
+                    <div>${data.onboarding_suggestions.first_90_days || '-'}</div>
+                </div>
+            </div>
+        </div>
+        ` : ''}
+
+        <div class="alert alert-light mt-3">
+            <h6 class="mb-2"><i class="bi bi-chat-left-quote me-1"></i>给候选人的综合反馈</h6>
+            <p class="mb-0 small">${data.candidate_message || '-'}</p>
+        </div>
+
+        <div class="mt-3 p-3 bg-light rounded">
+            <strong>综合评估总结：</strong>${data.summary || ''}
+        </div>
+    `;
+    new bootstrap.Modal(document.getElementById('metaEvalModal')).show();
 }
 
 loadPositions().then(() => loadCandidates());

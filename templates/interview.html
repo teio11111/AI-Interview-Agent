@@ -64,6 +64,23 @@
                 <div class="card-body" id="questionsList"></div>
             </div>
 
+            <!-- 提交问答 -->
+            <div class="card mb-3">
+                <div class="card-header"><i class="bi bi-pencil-square"></i> 提交问答（点击上方问题自动填入）</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <input type="text" class="form-control" id="inputQuestion" placeholder="输入或点击问题填入">
+                    </div>
+                    <div class="mb-2">
+                        <textarea class="form-control" id="inputAnswer" rows="3" placeholder="候选人回答内容"></textarea>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="submitDialog()">
+                        <i class="bi bi-send"></i> 提交并获取 AI 分析
+                    </button>
+                    <div id="feedbackResult" class="mt-3"></div>
+                </div>
+            </div>
+
             <!-- 对话记录 -->
             <div class="card mb-3">
                 <div class="card-header"><i class="bi bi-chat-left-text"></i> 面试对话记录</div>
@@ -292,7 +309,7 @@ async function selectSession(sessionId) {
             const qText = q.question || q;
             const diffBadge = q.difficulty === 'hard' ? 'danger' : q.difficulty === 'medium' ? 'warning' : 'info';
             return `
-            <div class="mb-2 p-2 bg-light rounded">
+            <div class="mb-2 p-2 bg-light rounded" style="cursor:pointer;" onclick="pickQuestion(this)" data-q="${qText.replace(/"/g,'&quot;')}">
                 <span class="badge bg-primary me-1" style="font-size:0.9rem;">Q${i+1}</span>
                 <span class="badge bg-${diffBadge} me-1">${q.difficulty || 'medium'}</span>
                 <span class="badge bg-secondary me-2">${q.category || ''}</span>
@@ -363,62 +380,46 @@ async function createSession() {
     if (!candId) { showToast('请先添加候选人', 'warning'); return; }
     
     bootstrap.Modal.getInstance(document.getElementById('newSessionModal')).hide();
-    showAiLoading('AI 正在生成面试问题...', '正在分析候选人简历与岗位要求，请稍候');
-    try {
-        const res = await apiCall(`/api/interviews/generate/${candId}`, 'POST');
-        hideAiLoading();
-        if (res.code === 200) {
+    consumeSSE(`/api/stream/questions/${candId}`, {
+        method: 'GET',
+        initialMsg: 'AI 正在生成面试问题...',
+        initialSub: '正在分析候选人简历与岗位要求，请稍候',
+        async onComplete(payload) {
+            await loadSessions();
             showToast('面试会话已创建，问题已生成');
-            loadSessions();
-            selectSession(res.data.session.id);
-        } else {
-            showToast(res.message, 'danger');
+            if (payload.session) selectSession(payload.session.id);
         }
-    } catch(e) {
-        hideAiLoading();
-        showToast('网络错误', 'danger');
-    }
+    });
 }
 
 async function createNewRound() {
     if (!currentSession) return;
     if (!confirm('确定为该候选人创建新一轮面试会话？')) return;
     
-    showAiLoading('AI 正在生成新一轮面试问题...', '正在结合上一轮表现重新设计问题，请稍候');
-    try {
-        const res = await apiCall(`/api/interviews/generate/${currentSession.candidate_id}`, 'POST');
-        hideAiLoading();
-        if (res.code === 200) {
+    consumeSSE(`/api/stream/questions/${currentSession.candidate_id}`, {
+        method: 'GET',
+        initialMsg: 'AI 正在生成新一轮面试问题...',
+        initialSub: '正在结合上一轮表现重新设计问题，请稍候',
+        async onComplete(payload) {
+            await loadCandidates().then(() => loadSessions());
             showToast('新一轮面试会话已创建，问题已生成');
-            loadCandidates().then(() => loadSessions());
-            selectSession(res.data.session.id);
-        } else {
-            showToast(res.message, 'danger');
+            if (payload.session) selectSession(payload.session.id);
         }
-    } catch(e) {
-        hideAiLoading();
-        showToast('网络错误', 'danger');
-    }
+    });
 }
 
 async function finishInterview() {
     if (!confirm('确定结束面试并生成评价报告？')) return;
     
-    showAiLoading('AI 正在生成面试评价报告...', '正在综合分析面试表现，请稍候');
-    try {
-        const res = await apiCall(`/api/interviews/${currentSession.id}/finish`, 'POST');
-        hideAiLoading();
-        if (res.code === 200) {
+    consumeSSE(`/api/stream/report/${currentSession.id}`, {
+        initialMsg: 'AI 正在生成面试评价报告...',
+        initialSub: '正在综合分析面试表现，请稍候',
+        async onComplete(payload) {
+            await selectSession(currentSession.id);
             showToast('面试已结束，报告已生成');
-            showReport(res.data.report);
-            selectSession(currentSession.id);
-        } else {
-            showToast(res.message, 'danger');
+            showReport(payload.result);
         }
-    } catch(e) {
-        hideAiLoading();
-        showToast('网络错误', 'danger');
-    }
+    });
 }
 
 function viewReport() {
@@ -475,6 +476,52 @@ function showReport(report) {
         </div>
     `;
     new bootstrap.Modal(document.getElementById('reportModal')).show();
+}
+
+function pickQuestion(el) {
+    document.getElementById('inputQuestion').value = el.dataset.q;
+}
+
+async function submitDialog() {
+    if (!currentSession) return;
+    const q = document.getElementById('inputQuestion').value.trim();
+    const a = document.getElementById('inputAnswer').value.trim();
+    if (!q || !a) { showToast('请填写问题和回答', 'warning'); return; }
+    
+    document.getElementById('feedbackResult').innerHTML = '<div class="text-center py-2"><span class="spinner-border spinner-border-sm"></span> AI 分析中...</div>';
+    try {
+        const res = await apiCall(`/api/interviews/${currentSession.id}/dialog`, 'POST', { question: q, answer: a });
+        if (res.code === 200) {
+            const fb = res.data.feedback;
+            let html = '<div class="ai-result p-3 rounded">';
+            if (fb) {
+                const scoreColor = fb.score >= 7 ? 'success' : fb.score >= 4 ? 'warning' : 'danger';
+                html += `<span class="badge bg-${scoreColor} me-1">${fb.score || '-'}/10</span>`;
+                if (fb.answer_quality) html += `<span class="badge bg-${fb.answer_quality === '优秀' ? 'success' : fb.answer_quality === '良好' ? 'primary' : 'warning'} me-1">${fb.answer_quality}</span>`;
+                if (fb.evaluation) html += `<p class="mt-2 mb-1">${fb.evaluation}</p>`;
+                if (fb.score_breakdown) {
+                    const sb = fb.score_breakdown;
+                    html += '<div class="d-flex flex-wrap gap-2 mt-2">';
+                    Object.entries(sb).forEach(([k,v]) => html += `<span class="badge bg-light text-dark border">${k}: ${v}</span>`);
+                    html += '</div>';
+                }
+                if (fb.strengths) html += `<p class="mt-2 mb-0 text-success"><i class="bi bi-check-circle"></i> ${fb.strengths}</p>`;
+                if (fb.weaknesses) html += `<p class="mt-1 mb-0 text-warning"><i class="bi bi-exclamation-circle"></i> ${fb.weaknesses}</p>`;
+                if (fb.suggestion) html += `<p class="mt-1 mb-0 text-info"><i class="bi bi-lightbulb"></i> ${fb.suggestion}</p>`;
+            } else {
+                html += '<span class="text-muted">已保存，暂无AI反馈</span>';
+            }
+            html += '</div>';
+            document.getElementById('feedbackResult').innerHTML = html;
+            document.getElementById('inputQuestion').value = '';
+            document.getElementById('inputAnswer').value = '';
+            selectSession(currentSession.id);
+        } else {
+            document.getElementById('feedbackResult').innerHTML = `<div class="text-danger">${res.message}</div>`;
+        }
+    } catch(e) {
+        document.getElementById('feedbackResult').innerHTML = '<div class="text-danger">网络错误</div>';
+    }
 }
 
 loadCandidates().then(() => loadSessions());

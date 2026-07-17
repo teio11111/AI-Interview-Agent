@@ -6,7 +6,7 @@ from repositories.candidate_repository import CandidateRepository
 from repositories.position_repository import PositionRepository
 from repositories.interview_repository import InterviewRepository
 from services.resume_service import ResumeService
-from services.interview_service import InterviewService
+from services.interview_service import InterviewService, get_orchestrator
 from utils.pdf_parser import extract_text_from_pdf
 from utils.response import success, error, created
 from utils.logger import logger
@@ -156,3 +156,89 @@ def batch_delete():
             CandidateRepository.delete(candidate)
             deleted.append(cid)
     return success({'deleted': deleted, 'count': len(deleted)})
+
+
+@candidate_bp.route('/<int:id>/meta-evaluation', methods=['POST'])
+@login_required(role='admin')
+def meta_evaluate(id):
+    """综合元评估：汇总岗位分析 + 简历评估 + 各轮面试报告"""
+    candidate = CandidateRepository.find_by_id(id)
+    if not candidate:
+        return error('候选人不存在', 404)
+
+    position = PositionRepository.find_by_id(candidate.position_id)
+    if not position:
+        return error('关联岗位不存在', 404)
+
+    # 1. 解析简历评估结果
+    resume_evaluation = None
+    if candidate.ai_analysis:
+        try:
+            resume_evaluation = json.loads(candidate.ai_analysis) if isinstance(candidate.ai_analysis, str) else candidate.ai_analysis
+        except Exception:
+            pass
+    if not resume_evaluation:
+        return error('请先完成简历 AI 分析', 400)
+
+    # 2. 获取所有已完成面试会话的报告
+    sessions = InterviewRepository.find_sessions_by_candidate(candidate.id)
+    completed = [s for s in sessions if s.status == 'completed' and s.report]
+    if not completed:
+        return error('请先完成至少一轮面试并生成报告', 400)
+
+    # 按创建时间排序
+    completed.sort(key=lambda x: x.created_at or 0)
+
+    interview_data = []
+    for i, sess in enumerate(completed):
+        try:
+            report = json.loads(sess.report) if isinstance(sess.report, str) else sess.report
+        except Exception:
+            report = {}
+        try:
+            questions_plan = json.loads(sess.questions_plan) if isinstance(sess.questions_plan, str) and sess.questions_plan else None
+        except Exception:
+            questions_plan = None
+        interview_data.append({
+            'round': i + 1,
+            'session_id': sess.id,
+            'report': report,
+            'questions_plan': questions_plan,
+        })
+
+    logger.info(f'[综合元评估] 开始: {candidate.name} → {position.name}, {len(interview_data)} 轮面试')
+
+    # 3. 调用编排器（复用全局实例）
+    orchestrator = get_orchestrator()
+    result = orchestrator.generate_meta_evaluation(
+        position=position,
+        candidate=candidate,
+        resume_evaluation=resume_evaluation,
+        interview_sessions=interview_data,
+    )
+
+    if not result:
+        return error('AI 综合元评估失败，请重试', 502)
+
+    # 4. 保存结果
+    candidate.meta_evaluation = json.dumps(result, ensure_ascii=False)
+    candidate.meta_eval_round_count = len(interview_data)
+    CandidateRepository.update(candidate)
+
+    return success({'evaluation': result, 'candidate_id': id})
+
+
+@candidate_bp.route('/<int:id>/meta-evaluation', methods=['GET'])
+@login_required(role='admin')
+def get_meta_evaluation(id):
+    """获取已保存的综合元评估结果"""
+    candidate = CandidateRepository.find_by_id(id)
+    if not candidate:
+        return error('候选人不存在', 404)
+    if not candidate.meta_evaluation:
+        return error('尚未生成综合元评估', 404)
+    try:
+        result = json.loads(candidate.meta_evaluation)
+    except Exception:
+        result = {}
+    return success({'evaluation': result, 'candidate_id': id})

@@ -128,15 +128,17 @@ def finish_interview(session_id):
     candidate = CandidateRepository.find_by_id(session.candidate_id)
     position = PositionRepository.find_by_id(candidate.position_id)
 
-    # 传入简历评估结果，供评价官交叉验证
-    resume_analysis = None
-    if candidate.ai_analysis:
+    # 解析出题策略（供评估师了解每道题的考察意图）
+    questions_plan = None
+    if session.questions_plan:
         try:
-            resume_analysis = json.loads(candidate.ai_analysis) if isinstance(candidate.ai_analysis, str) else candidate.ai_analysis
+            questions_plan = json.loads(session.questions_plan) if isinstance(session.questions_plan, str) else session.questions_plan
         except:
             pass
 
-    report = InterviewService.generate_report(position, candidate.name, full_dialogs, resume_analysis)
+    # 纯面试评价：不传简历/岗位分析数据，只传对话和出题策略
+    report = InterviewService.generate_report(position, candidate.name, full_dialogs,
+                                              questions_plan=questions_plan)
 
     if report:
         session.report = json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else report

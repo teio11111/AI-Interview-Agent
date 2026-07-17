@@ -138,21 +138,16 @@ async function createPosition() {
 }
 
 async function analyzePosition(id, btn) {
-    showAiLoading('AI 正在分析岗位要求...', '正在解析岗位 JD 并提取技术能力模型，请稍候');
-    try {
-        const res = await apiCall(`/api/positions/${id}/analyze`, 'POST');
-        hideAiLoading();
-        if (res.code === 200) {
+    consumeSSE(`/api/stream/position/${id}`, {
+        method: 'GET',
+        initialMsg: 'AI 正在分析岗位要求...',
+        initialSub: '正在解析岗位 JD 并提取技术能力模型，请稍候',
+        async onComplete(payload) {
+            await loadPositions();
             showToast('AI 分析完成');
-            showAiResult(res.data.analysis);
-            loadPositions();
-        } else {
-            showToast(res.message, 'danger');
+            showAiResult(payload.result);
         }
-    } catch(e) {
-        hideAiLoading();
-        showToast('网络错误', 'danger');
-    }
+    });
 }
 
 function showAiResult(analysis) {

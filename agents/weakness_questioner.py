@@ -1,0 +1,91 @@
+"""短板探测出题官 Agent - 专注短板探测与场景设计题"""
+from agents.base_agent import BaseAgent
+
+
+class WeaknessQuestionerAgent(BaseAgent):
+    """短板探测出题官
+    
+    职责：针对简历评估中发现的短板和风险，设计探测题；同时设计1道综合场景题。
+    并行工作：与项目深挖出题官、技能验证出题官同时工作。
+    输出：1-2道短板探测题 + 1道场景设计题。
+    """
+    AGENT_NAME = "短板探测出题官"
+    SYSTEM_PROMPT = """你是「短板探测出题官」，专精于设计探测候选人短板和风险点的面试题。
+
+你的出题哲学：
+- 不是"找茬"，而是帮助面试官判断候选人的短板是否影响工作
+- 针对简历中的模糊描述、可疑点、缺失技能出题
+- 场景设计题考察候选人的综合问题解决能力
+
+工作原则：
+- 短板探测题要温和但精准，给候选人解释的机会
+- 场景设计题要综合多个技术点，考察系统设计能力
+- 每道题必须引用简历中的具体内容
+- 问题设计应能区分"真的不会"和"没机会接触"
+
+请始终以严格的 JSON 格式输出，不要输出任何解释性文字。"""
+
+    def design(self, position_name, tech_requirements,
+               position_analysis, resume_analysis, resume_text):
+        """设计短板探测题 + 场景设计题
+
+        Args:
+            position_name: 岗位名称
+            tech_requirements: 技术要求
+            position_analysis: 岗位分析结果
+            resume_analysis: 简历评估结果
+            resume_text: 候选人简历原文
+
+        Returns:
+            dict: 1-2道短板探测题 + 1道场景设计题
+        """
+        prompt = f"""## 任务
+你是短板探测出题官。请设计 1-2 道**短板探测题**和 1 道**场景设计题**。
+
+## 岗位信息
+- 岗位名称：{position_name}
+- 技术要求：{tech_requirements or ''}
+
+## 岗位分析师的分析结果
+{self.summarize(position_analysis)}
+
+## 简历评估师的评估结果（重点关注 risks, missing_skills）
+{self.summarize(resume_analysis)}
+
+## 候选人简历原文
+{resume_text or '暂无'}
+
+## 出题策略
+
+### 短板探测题（1-2道）
+针对以下情况出题：
+- 技能"了解但不深入" → 出题探底，看真实水平到哪
+- 模糊描述"参与过" → 追问具体贡献，验证真实角色
+- 缺失的核心技能 → 问是否接触过相关概念，判断学习潜力
+- 简历中的风险点 → 温和但精准地探测
+
+**注意**：语气要温和，给候选人解释空间，不要像审讯。
+
+### 场景设计题（1道）
+设计一个综合场景题：
+- 给出一个实际工作场景（与岗位高度相关）
+- 要求候选人设计一个解决方案
+- 考察系统设计能力、权衡取舍、工程思维
+- 难度 medium-hard
+
+## 输出格式（严格 JSON，2-3道题）
+{{
+    "questions": [
+        {{
+            "question": "具体问题",
+            "category": "短板探测/场景设计",
+            "difficulty": "easy/medium/hard",
+            "resume_reference": "简历中对应的原文引用",
+            "intent": "这道题想探测什么",
+            "expected_depth": "候选人应该回答到什么程度",
+            "follow_up_hints": ["追问方向1", "追问方向2"],
+            "risk_target": "针对的具体风险点（短板探测题填，场景设计题不填）"
+        }}
+    ]
+}}"""
+        return self.think_json(prompt)

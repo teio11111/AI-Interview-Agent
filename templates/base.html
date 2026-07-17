@@ -167,6 +167,67 @@
         function hideAiLoading() {
             document.getElementById('aiLoadingOverlay').classList.remove('active');
         }
+
+        // 通用 SSE 消费函数：流式读取 AI 进度，实时更新加载遮罩
+        async function consumeSSE(url, {
+            method = 'POST',
+            body = null,
+            initialMsg = 'AI 正在处理中...',
+            initialSub = '请耐心等待，通常需要 10-30 秒',
+            onComplete = null,   // (result) => {}
+            onError = null       // (message) => {}
+        } = {}) {
+            showAiLoading(initialMsg, initialSub);
+            try {
+                const opts = { method, headers: { 'Content-Type': 'application/json' } };
+                if (body) opts.body = JSON.stringify(body);
+                const response = await fetch(url, opts);
+                if (!response.ok) {
+                    const err = await response.json();
+                    hideAiLoading();
+                    if (onError) onError(err.message || '请求失败');
+                    else showToast(err.message || '请求失败', 'danger');
+                    return;
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '', result = null;
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const p = JSON.parse(line.slice(6));
+                            if (p.event === 'progress') {
+                                if (p.message) document.getElementById('aiLoadingMsg').textContent = p.message;
+                                if (p.agent) document.getElementById('aiLoadingSub').textContent = `${p.agent} 正在工作...`;
+                            } else if (p.event === 'complete') {
+                                result = p;
+                            } else if (p.event === 'error') {
+                                hideAiLoading();
+                                if (onError) onError(p.message || '处理失败');
+                                else showToast(p.message || '处理失败', 'danger');
+                                return;
+                            }
+                        } catch(e) {}
+                    }
+                }
+                hideAiLoading();
+                if (result && onComplete) await onComplete(result);
+                else if (!result) {
+                    if (onError) onError('完成但未获取结果');
+                    else showToast('完成但未获取结果', 'warning');
+                }
+            } catch(e) {
+                hideAiLoading();
+                if (onError) onError('网络错误: ' + e.message);
+                else showToast('网络错误: ' + e.message, 'danger');
+            }
+        }
     </script>
     <script>
         async function doLogout() {

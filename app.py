@@ -19,12 +19,14 @@ def create_app():
     from routes.interview_routes import interview_bp, home_bp
     from routes.auth_routes import auth_bp
     from routes.candidate_portal_routes import candidate_portal_bp
+    from routes.stream_routes import stream_bp
     app.register_blueprint(auth_bp)
     app.register_blueprint(home_bp)
     app.register_blueprint(position_bp)
     app.register_blueprint(candidate_bp)
     app.register_blueprint(interview_bp)
     app.register_blueprint(candidate_portal_bp)
+    app.register_blueprint(stream_bp)
 
     # 导入所有模型并创建表
     with app.app_context():
@@ -49,4 +51,4 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
-    app.run(host='0.0.0.0', port=8088, debug=True)
+    app.run(host='0.0.0.0', port=8088, debug=True, threaded=True)
