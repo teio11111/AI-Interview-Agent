@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{% block title %}我的门户 - AI Interview Agent{% endblock %}
+
+{% block extra_css %}
+<style>
+    .nav-tabs .nav-link { font-weight: 500; }
+    .nav-tabs .nav-link.active { color: var(--primary-color); }
+    .position-card { cursor: pointer; transition: all 0.2s; border-left: 4px solid transparent; }
+    .position-card:hover { border-left-color: var(--primary-color); transform: translateX(4px); }
+    .position-card.applied { border-left-color: #22c55e; background: #f0fdf4; }
+    .status-pill { padding: 0.25rem 0.75rem; border-radius: 50px; font-size: 0.8rem; font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h3 class="mb-1"><i class="bi bi-door-open me-2"></i>候选人门户</h3>
+        <p class="text-muted mb-0">查看岗位、提交简历、跟踪面试进度</p>
+    </div>
+</div>
+
+<!-- Tab 导航 -->
+<ul class="nav nav-tabs mb-4" id="portalTabs">
+    <li class="nav-item">
+        <a class="nav-link active" href="#" onclick="switchTab('positions', event)">
+            <i class="bi bi-briefcase me-1"></i> 岗位列表
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="#" onclick="switchTab('resume', event)">
+            <i class="bi bi-file-text me-1"></i> 我的简历
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="#" onclick="switchTab('interviews', event)">
+            <i class="bi bi-chat-dots me-1"></i> 面试进度
+        </a>
+    </li>
+</ul>
+
+<!-- Tab 1: 岗位列表 -->
+<div id="tabPositions">
+    <div id="positionsList"><div class="text-center py-4"><div class="spinner-border text-primary"></div></div></div>
+</div>
+
+<!-- Tab 2: 我的简历 -->
+<div id="tabResume" class="d-none">
+    <div id="resumeContent"><div class="text-center py-4 text-muted">加载中...</div></div>
+</div>
+
+<!-- Tab 3: 面试进度 -->
+<div id="tabInterviews" class="d-none">
+    <div id="interviewsContent"><div class="text-center py-4 text-muted">加载中...</div></div>
+</div>
+
+<!-- 投递简历弹窗 -->
+<div class="modal fade" id="applyModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-send me-1"></i> 投递简历</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-2">
+                    <span class="text-muted">投递岗位：</span>
+                    <strong id="applyPositionName"></strong>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">真实姓名</label>
+                    <input type="text" class="form-control" id="applyRealName" placeholder="请输入您的真实姓名">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">简历内容</label>
+                    <textarea class="form-control" id="applyResume" rows="12" placeholder="请粘贴您的简历内容..."></textarea>
+                </div>
+                <input type="hidden" id="applyPositionId">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary" id="applySubmitBtn" onclick="submitApply()">
+                    <i class="bi bi-send me-1"></i> 提交投递
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let allPositions = [];
+let myInfo = null;
+
+function switchTab(tab, e) {
+    e.preventDefault();
+    document.querySelectorAll('#portalTabs .nav-link').forEach(l => l.classList.remove('active'));
+    e.target.closest('.nav-link').classList.add('active');
+    document.getElementById('tabPositions').classList.toggle('d-none', tab !== 'positions');
+    document.getElementById('tabResume').classList.toggle('d-none', tab !== 'resume');
+    document.getElementById('tabInterviews').classList.toggle('d-none', tab !== 'interviews');
+    if (tab === 'resume') loadMyInfo();
+    if (tab === 'interviews') loadMyInfo();
+}
+
+// ===== 岗位列表 =====
+async function loadPositions() {
+    try {
+        const res = await apiCall('/api/candidate/positions');
+        if (res.code !== 200) { document.getElementById('positionsList').innerHTML = '<p class="text-danger">加载失败</p>'; return; }
+        allPositions = res.data || [];
+        renderPositions();
+    } catch (e) {
+        document.getElementById('positionsList').innerHTML = '<p class="text-danger">网络错误</p>';
+    }
+}
+
+function renderPositions() {
+    const el = document.getElementById('positionsList');
+    if (allPositions.length === 0) {
+        el.innerHTML = '<div class="text-center py-5 text-muted"><i class="bi bi-inbox" style="font-size:3rem;"></i><p class="mt-2">暂无开放岗位</p></div>';
+        return;
+    }
+    el.innerHTML = allPositions.map(p => `
+        <div class="card mb-2 position-card ${p.applied ? 'applied' : ''}">
+            <div class="card-body d-flex justify-content-between align-items-center">
+                <div>
+                    <h6 class="mb-1">${p.name}</h6>
+                    <small class="text-muted">${p.tech_requirements || '无技术要求'}</small>
+                </div>
+                <div>
+                    ${p.applied
+                        ? '<span class="status-pill bg-success text-white">已投递</span>'
+                        : `<button class="btn btn-sm btn-outline-primary" onclick="openApply(${p.id}, '${p.name}')">投递</button>`
+                    }
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function openApply(posId, posName) {
+    document.getElementById('applyPositionId').value = posId;
+    document.getElementById('applyPositionName').textContent = posName;
+    document.getElementById('applyResume').value = '';
+    document.getElementById('applyRealName').value = '';
+    new bootstrap.Modal(document.getElementById('applyModal')).show();
+}
+
+async function submitApply() {
+    const posId = document.getElementById('applyPositionId').value;
+    const resume = document.getElementById('applyResume').value.trim();
+    const realName = document.getElementById('applyRealName').value.trim();
+    if (!resume) return showToast('请填写简历内容', 'warning');
+    if (!realName) return showToast('请填写真实姓名', 'warning');
+
+    const btn = document.getElementById('applySubmitBtn');
+    setLoading(btn, true);
+    try {
+        const res = await apiCall('/api/candidate/apply', 'POST', {
+            position_id: parseInt(posId), resume_text: resume, real_name: realName
+        });
+        setLoading(btn, false);
+        if (res.code === 200) {
+            bootstrap.Modal.getInstance(document.getElementById('applyModal')).hide();
+            showToast('投递成功！');
+            loadPositions();
+        } else {
+            showToast(res.message || '投递失败', 'danger');
+        }
+    } catch (e) {
+        setLoading(btn, false);
+        showToast('网络错误', 'danger');
+    }
+}
+
+// ===== 我的简历 =====
+async function loadMyInfo() {
+    try {
+        const res = await apiCall('/api/candidate/my-info');
+        if (res.code !== 200) return;
+        myInfo = res.data;
+        renderResume();
+        renderInterviews();
+    } catch (e) {
+        console.error('加载信息失败', e);
+    }
+}
+
+function renderResume() {
+    const el = document.getElementById('resumeContent');
+    const apps = myInfo?.applications || [];
+    if (apps.length === 0) {
+        el.innerHTML = '<div class="text-center py-5 text-muted"><i class="bi bi-file-earmark" style="font-size:3rem;"></i><p class="mt-2">尚未投递简历</p><p class="small">请前往「岗位列表」选择岗位并投递简历</p></div>';
+        return;
+    }
+
+    el.innerHTML = apps.map((app, idx) => {
+        const c = app.candidate;
+        const posName = app.position?.name || '未知岗位';
+        const analysis = c.ai_analysis;
+        const score = c.match_score;
+        const scoreCls = score >= 80 ? 'success' : score >= 60 ? 'warning' : 'danger';
+
+        let html = `<div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-file-text me-1"></i> ${posName}</span>
+                ${score ? `<span class="badge bg-${scoreCls} fs-6">${score} 分</span>` : ''}
+            </div>
+            <div class="card-body">
+                <pre class="mb-0" style="white-space:pre-wrap;font-size:0.9rem;">${c.resume_text || '无内容'}</pre>
+            </div>
+        </div>`;
+
+        if (analysis && typeof analysis === 'object') {
+            html += `<div class="card mb-3"><div class="card-header"><span class="badge badge-ai me-1"><i class="bi bi-robot"></i> AI</span> ${posName} - 技能评估</div><div class="card-body">`;
+            const cSummary = analysis.candidate_summary || analysis.summary || '';
+            if (cSummary) html += `<div class="mb-3">${cSummary}</div>`;
+            const matched = analysis.matched_skills || [];
+            if (matched.length > 0) html += `<div class="mb-3"><strong class="text-success"><i class="bi bi-check-circle me-1"></i>匹配技能：</strong><div class="mt-1">${matched.map(s => { const name = typeof s === 'string' ? s : s.skill; const prof = typeof s === 'object' && s.proficiency ? '(' + s.proficiency + ')' : ''; return '<span class="badge bg-success me-1 mb-1">' + name + prof + '</span>'; }).join('')}</div></div>`;
+            const missing = analysis.missing_skills || [];
+            if (missing.length > 0) html += `<div class="mb-3"><strong class="text-warning"><i class="bi bi-exclamation-circle me-1"></i>待提升：</strong><div class="mt-1">${missing.map(s => { const name = typeof s === 'string' ? s : s.skill; return '<span class="badge bg-warning text-dark me-1 mb-1">' + name + '</span>'; }).join('')}</div></div>`;
+            if (analysis.strengths) html += `<div class="mb-3"><strong class="text-success">优势：</strong><ul class="mb-0">${(Array.isArray(analysis.strengths) ? analysis.strengths : []).map(s => typeof s === 'string' ? `<li>${s}</li>` : `<li>${s.point || ''}${s.evidence ? ' <small class="text-muted">(' + s.evidence + ')</small>' : ''}</li>`).join('')}</ul></div>`;
+            if (analysis.weaknesses) html += `<div class="mb-3"><strong class="text-warning">可提升方向：</strong><ul class="mb-0">${(Array.isArray(analysis.weaknesses) ? analysis.weaknesses : []).map(s => typeof s === 'string' ? `<li>${s}</li>` : `<li>${s.point || ''}</li>`).join('')}</ul></div>`;
+            html += `</div></div>`;
+        } else if (!analysis) {
+            html += `<div class="card mb-3"><div class="card-body text-center py-4"><p class="text-muted mb-2">AI 尚未分析您的简历</p><button class="btn btn-sm btn-outline-primary" onclick="triggerAnalysis(${c.id}, this)"><i class="bi bi-robot me-1"></i> 请求 AI 分析</button></div></div>`;
+        }
+        return html;
+    }).join('');
+}
+
+async function triggerAnalysis(candidateId, btn) {
+    showAiLoading('AI 正在分析您的简历...', '正在匹配岗位技能要求，请稍候');
+    try {
+        const res = await apiCall('/api/candidate/analyze', 'POST', { candidate_id: candidateId });
+        hideAiLoading();
+        if (res.code === 200) {
+            showToast('AI 分析完成！');
+            loadMyInfo();
+        } else {
+            showToast(res.message || '分析失败', 'danger');
+        }
+    } catch (e) {
+        hideAiLoading();
+        showToast('网络错误', 'danger');
+    }
+}
+
+// ===== 面试进度 =====
+function renderInterviews() {
+    const el = document.getElementById('interviewsContent');
+    const apps = myInfo?.applications || [];
+    // 收集所有面试会话
+    const allSessions = [];
+    apps.forEach(app => {
+        (app.sessions || []).forEach(s => {
+            allSessions.push({ ...s, positionName: app.position?.name || '未知' });
+        });
+    });
+    if (allSessions.length === 0) {
+        el.innerHTML = '<div class="text-center py-5 text-muted"><i class="bi bi-chat" style="font-size:3rem;"></i><p class="mt-2">暂无面试安排</p><p class="small">简历投递并通过 AI 分析后，管理员将安排面试</p></div>';
+        return;
+    }
+    const statusMap = {
+        'preparing': { text: '准备中', cls: 'secondary' },
+        'in_progress': { text: '进行中', cls: 'primary' },
+        'completed': { text: '已完成', cls: 'success' }
+    };
+
+    el.innerHTML = allSessions.map(s => {
+        const st = statusMap[s.status] || { text: s.status, cls: 'secondary' };
+        let reportHtml = '';
+        if (s.status === 'completed' && s.report) {
+            const r = typeof s.report === 'string' ? JSON.parse(s.report) : s.report;
+            const score = r.overall_score || 0;
+            const scoreCls = score >= 70 ? 'success' : score >= 50 ? 'warning' : 'danger';
+            const summary = r.candidate_summary || r.summary || '';
+            reportHtml = `<div class="mt-3 p-3 bg-light rounded">
+                <h6><i class="bi bi-file-earmark-text me-1"></i> 面试评价报告</h6>
+                <div class="d-flex align-items-center gap-3 mb-2">
+                    <span class="badge bg-${scoreCls} fs-6 p-2">${score} 分</span>
+                </div>
+                ${summary ? `<p class="mb-0 small" style="line-height:1.8;">${summary}</p>` : '<p class="text-muted small mb-0">暂无评价详情</p>'}
+            </div>`;
+        }
+        return `<div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>${s.positionName} - 面试 #${s.id}</span>
+                <span class="badge bg-${st.cls}">${st.text}</span>
+            </div>
+            <div class="card-body">
+                <small class="text-muted">创建于 ${s.created_at || '-'}</small>
+                ${reportHtml}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+loadPositions();
+</script>
+{% endblock %}

@@ -1,0 +1,482 @@
+{% extends "base.html" %}
+{% block title %}面试工作台 - AI Interview Agent{% endblock %}
+
+{% block content %}
+<h3 class="mb-4"><i class="bi bi-chat-dots"></i> 面试工作台</h3>
+
+<div class="row g-4">
+    <!-- 左侧：岗位分类 + 会话列表（二级结构） -->
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>面试会话</span>
+                <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#newSessionModal">
+                    <i class="bi bi-plus-lg"></i> 新建
+                </button>
+            </div>
+            <div class="d-flex border-bottom" id="statusTabs" style="font-size:0.8rem;">
+                <a href="#" class="flex-fill text-center py-2 text-decoration-none fw-semibold border-bottom border-2 border-primary text-primary" data-status="all" onclick="filterByStatus('all')">全部</a>
+                <a href="#" class="flex-fill text-center py-2 text-decoration-none text-muted" data-status="preparing" onclick="filterByStatus('preparing')">待面试</a>
+                <a href="#" class="flex-fill text-center py-2 text-decoration-none text-muted" data-status="in_progress" onclick="filterByStatus('in_progress')">进行中</a>
+                <a href="#" class="flex-fill text-center py-2 text-decoration-none text-muted" data-status="completed" onclick="filterByStatus('completed')">已完成</a>
+            </div>
+            <div class="card-body p-0">
+                <div id="sessionList"></div>
+                <div id="emptySessions" class="text-center py-4 d-none">
+                    <p class="text-muted mb-0">暂无面试会话</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右侧：面试工作区 -->
+    <div class="col-md-8">
+        <div id="workspace" class="d-none">
+            <!-- 面试信息 -->
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h5 class="mb-1" id="sessionTitle">面试会话</h5>
+                            <small class="text-muted" id="sessionInfo"></small>
+                        </div>
+                        <div>
+                            <span class="badge" id="sessionStatus"></span>
+                            <button class="btn btn-sm btn-info ms-2 d-none" id="btnViewReport" onclick="viewReport()">
+                                <i class="bi bi-file-earmark-text"></i> 查看报告
+                            </button>
+                            <button class="btn btn-sm btn-success ms-2" id="btnFinish" onclick="finishInterview()">
+                                <i class="bi bi-check-lg"></i> 结束面试
+                            </button>
+                            <button class="btn btn-sm btn-outline-primary ms-2" id="btnNewRound" onclick="createNewRound()">
+                                <i class="bi bi-plus-circle"></i> 添加新一轮面试
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 面试问题 -->
+            <div class="card mb-3">
+                <div class="card-header">
+                    <i class="bi bi-list-check"></i> AI 生成的面试问题
+                </div>
+                <div class="card-body" id="questionsList"></div>
+            </div>
+
+            <!-- 对话记录 -->
+            <div class="card mb-3">
+                <div class="card-header"><i class="bi bi-chat-left-text"></i> 面试对话记录</div>
+                <div class="card-body">
+                    <div id="dialogHistory" style="max-height: 500px; overflow-y: auto;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 空状态 -->
+        <div id="emptyWorkspace" class="text-center py-5">
+            <i class="bi bi-chat-square-text text-muted" style="font-size: 3rem;"></i>
+            <p class="text-muted mt-3">选择一个面试会话或创建新会话开始</p>
+        </div>
+    </div>
+</div>
+
+<!-- 新建会话弹窗 -->
+<div class="modal fade" id="newSessionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">新建面试会话</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">选择候选人 <span class="text-danger">*</span></label>
+                    <select class="form-select" id="selectCandidate"></select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="btnCreateSession" onclick="createSession()">创建并开始</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 面试报告弹窗 -->
+<div class="modal fade" id="reportModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><span class="badge badge-ai me-2"><i class="bi bi-robot"></i> AI</span>面试评价报告</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="reportContent"></div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let currentSession = null;
+let candidatesData = [];
+let sessionsData = [];
+let positionsMap = {};
+let currentQuestions = [];
+let statusFilter = 'all';
+
+function filterByStatus(status) {
+    statusFilter = status;
+    document.querySelectorAll('#statusTabs a').forEach(a => {
+        if (a.dataset.status === status) {
+            a.className = 'flex-fill text-center py-2 text-decoration-none fw-semibold border-bottom border-2 border-primary text-primary';
+        } else {
+            a.className = 'flex-fill text-center py-2 text-decoration-none text-muted';
+        }
+    });
+    renderSessionList();
+}
+
+async function loadCandidates() {
+    const [candRes, sessRes, posRes] = await Promise.all([
+        apiCall('/api/candidates'),
+        apiCall('/api/interviews/sessions'),
+        apiCall('/api/positions')
+    ]);
+    candidatesData = candRes.data || [];
+    sessionsData = sessRes.data || [];
+    (posRes.data || []).forEach(p => { positionsMap[p.id] = p.name; });
+    
+    // Filter out candidates who already have a session
+    const candsWithSession = new Set(sessionsData.map(s => s.candidate_id));
+    const available = candidatesData.filter(c => !candsWithSession.has(c.id));
+    
+    const select = document.getElementById('selectCandidate');
+    select.innerHTML = available.length 
+        ? available.map(c => `<option value="${c.id}">${c.name}</option>`).join('')
+        : '<option value="">\u6240\u6709\u5019\u9009\u4eba\u5747\u5df2\u6709\u9762\u8bd5\u4f1a\u8bdd</option>';
+}
+
+async function loadSessions() {
+    const res = await apiCall('/api/interviews/sessions');
+    sessionsData = res.data || [];
+    renderSessionList();
+}
+
+function renderSessionList() {
+    const list = document.getElementById('sessionList');
+    const empty = document.getElementById('emptySessions');
+    
+    // Apply status filter
+    const filtered = statusFilter === 'all' ? sessionsData : sessionsData.filter(s => s.status === statusFilter);
+    
+    if (filtered.length === 0) {
+        list.innerHTML = '';
+        empty.classList.remove('d-none');
+        return;
+    }
+    
+    empty.classList.add('d-none');
+    
+    // 按岗位分组
+    const grouped = {};
+    filtered.forEach(s => {
+        const cand = candidatesData.find(c => c.id === s.candidate_id);
+        const pid = cand ? cand.position_id : 'unknown';
+        if (!grouped[pid]) grouped[pid] = [];
+        grouped[pid].push({...s, candidate: cand});
+    });
+    
+    // 获取岗位名称映射（已在 loadCandidates 中预加载）
+    
+    // 判断当前会话属于哪个岗位（用于自动展开）
+    const activePid = currentSession ? (() => {
+        const cand = candidatesData.find(c => c.id === currentSession.candidate_id);
+        return cand ? String(cand.position_id) : null;
+    })() : null;
+    
+    // 渲染二级折叠结构
+    let html = '<div class="accordion accordion-flush" id="posAccordion">';
+    Object.entries(grouped).forEach(([pid, sessions]) => {
+        const posName = positionsMap[parseInt(pid)] || '未知岗位';
+        const collapseId = `pos_${pid}`;
+        const isExpanded = pid === activePid;
+        const completedCount = sessions.filter(s => s.status === 'completed').length;
+        const totalCount = sessions.length;
+        
+        html += `
+        <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+                <button class="accordion-button ${isExpanded ? '' : 'collapsed'} py-2 px-3" type="button" 
+                    data-bs-toggle="collapse" data-bs-target="#${collapseId}" 
+                    style="font-size:0.85rem; background: var(--bg-light);">
+                    <i class="bi bi-briefcase me-2"></i>
+                    <strong>${posName}</strong>
+                    <span class="badge bg-secondary ms-auto me-2">${completedCount}/${totalCount}</span>
+                </button>
+            </h2>
+            <div id="${collapseId}" class="accordion-collapse collapse ${isExpanded ? 'show' : ''}">
+                <div class="accordion-body p-0">`;
+        
+        sessions.forEach(s => {
+            const candName = s.candidate ? s.candidate.name : '未知';
+            const score = s.candidate ? s.candidate.match_score : null;
+            const statusClass = s.status === 'completed' ? 'success' : s.status === 'in_progress' ? 'primary' : 'secondary';
+            const statusText = s.status === 'completed' ? '已完成' : s.status === 'in_progress' ? '进行中' : '准备中';
+            const active = currentSession && currentSession.id === s.id ? 'border-start border-primary border-3 bg-primary bg-opacity-10' : '';
+            
+            html += `
+                <a href="#" class="d-flex justify-content-between align-items-center px-4 py-2 text-decoration-none border-bottom ${active}" 
+                    onclick="selectSession(${s.id})" style="font-size:0.85rem;">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-person-circle text-muted"></i>
+                        <div>
+                            <div><strong>${candName}</strong></div>
+                            <small class="text-muted">${s.created_at}</small>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-1">
+                        ${score ? `<span class="badge bg-${score >= 70 ? 'success' : score >= 50 ? 'warning' : 'danger'}" style="font-size:0.65rem;">${score}</span>` : ''}
+                        <span class="badge bg-${statusClass}" style="font-size:0.65rem;">${statusText}</span>
+                    </div>
+                </a>`;
+        });
+        
+        html += `</div></div></div>`;
+    });
+    html += '</div>';
+    
+    list.innerHTML = html;
+}
+
+async function selectSession(sessionId) {
+    const res = await apiCall(`/api/interviews/${sessionId}`);
+    if (res.code !== 200) return;
+    
+    currentSession = res.data.session;
+    const dialogs = res.data.dialogs;
+    
+    document.getElementById('workspace').classList.remove('d-none');
+    document.getElementById('emptyWorkspace').classList.add('d-none');
+    
+    // 更新标题
+    const cand = candidatesData.find(c => c.id === currentSession.candidate_id);
+    document.getElementById('sessionTitle').textContent = `${cand ? cand.name : ''} 的面试`;
+    document.getElementById('sessionInfo').textContent = `会话ID: ${currentSession.id} | 创建于 ${currentSession.created_at}`;
+    
+    const statusClass = currentSession.status === 'completed' ? 'bg-success' : currentSession.status === 'in_progress' ? 'bg-primary' : 'bg-secondary';
+    const statusText = currentSession.status === 'completed' ? '已完成' : currentSession.status === 'in_progress' ? '进行中' : '准备中';
+    document.getElementById('sessionStatus').className = `badge ${statusClass}`;
+    document.getElementById('sessionStatus').textContent = statusText;
+    
+    // 重置当前会话问题列表
+    currentQuestions = [];
+    document.getElementById('questionsList').innerHTML = '';
+    
+    // 显示 AI 生成的问题（按优先级排序）
+    if (currentSession.questions_plan) {
+        const questions = typeof currentSession.questions_plan === 'string' 
+            ? JSON.parse(currentSession.questions_plan) : currentSession.questions_plan;
+        currentQuestions = questions.questions || questions;
+        const categoryPriority = { '项目深挖': 0, '技能验证': 1, '短板探测': 2, '场景设计': 3 };
+        currentQuestions.sort((a, b) => {
+            const pa = categoryPriority[a.category] ?? 99;
+            const pb = categoryPriority[b.category] ?? 99;
+            if (pa !== pb) return pa - pb;
+            const diffOrder = { 'hard': 0, 'medium': 1, 'easy': 2 };
+            return (diffOrder[a.difficulty] ?? 9) - (diffOrder[b.difficulty] ?? 9);
+        });
+        document.getElementById('questionsList').innerHTML = currentQuestions.map((q, i) => {
+            const qText = q.question || q;
+            const diffBadge = q.difficulty === 'hard' ? 'danger' : q.difficulty === 'medium' ? 'warning' : 'info';
+            return `
+            <div class="mb-2 p-2 bg-light rounded">
+                <span class="badge bg-primary me-1" style="font-size:0.9rem;">Q${i+1}</span>
+                <span class="badge bg-${diffBadge} me-1">${q.difficulty || 'medium'}</span>
+                <span class="badge bg-secondary me-2">${q.category || ''}</span>
+                ${qText}
+            </div>`;
+        }).join('');
+    }
+    
+    // 显示对话记录（只读）
+    const historyDiv = document.getElementById('dialogHistory');
+    if (dialogs.length === 0) {
+        historyDiv.innerHTML = '<p class="text-muted text-center py-4">暂无对话记录</p>';
+    } else {
+        historyDiv.innerHTML = dialogs.map(d => {
+            const fb = d.ai_feedback ? (typeof d.ai_feedback === 'string' ? JSON.parse(d.ai_feedback) : d.ai_feedback) : null;
+            return `
+            <div class="mb-3 p-3 bg-white rounded border">
+                <div class="mb-2">
+                    <strong class="text-primary">Q${d.seq}:</strong>
+                    ${d.parent_seq ? `<span class="badge bg-info ms-1" style="font-size:0.75rem;"><i class="bi bi-arrow-return-right"></i> 追问自 Q${d.parent_seq}</span>` : ''}
+                    ${d.question}
+                </div>
+                <div class="mb-2"><strong class="text-success">A${d.seq}:</strong> ${d.answer}</div>
+                ${fb ? `<div class="mt-2 p-2 ai-result"><small>${renderFeedbackBrief(fb)}</small></div>` : ''}
+            </div>`;
+        }).join('');
+    }
+    
+    // 已完成的会话
+    const isCompleted = currentSession.status === 'completed';
+    document.getElementById('btnFinish').disabled = isCompleted;
+    document.getElementById('btnFinish').style.display = isCompleted ? 'none' : '';
+    
+    const btnReport = document.getElementById('btnViewReport');
+    if (isCompleted && currentSession.report) {
+        btnReport.classList.remove('d-none');
+    } else {
+        btnReport.classList.add('d-none');
+    }
+    
+    // 只有已完成的会话才显示“添加新一轮面试”
+    const btnNewRound = document.getElementById('btnNewRound');
+    btnNewRound.style.display = isCompleted ? '' : 'none';
+    
+    loadSessions();
+}
+
+function renderFeedbackBrief(feedbackStr) {
+    try {
+        const fb = typeof feedbackStr === 'string' ? JSON.parse(feedbackStr) : feedbackStr;
+        const quality = fb.answer_quality || '';
+        const qualityColor = quality === '优秀' ? 'success' : quality === '良好' ? 'primary' : quality === '一般' ? 'warning' : 'danger';
+        let breakdown = '';
+        if (fb.score_breakdown) {
+            const sb = fb.score_breakdown;
+            breakdown = `<br><small class="text-muted">` +
+                `准确:${sb.accuracy||'-'} 深度:${sb.depth||'-'} 实践:${sb.practicality||'-'} 逻辑:${sb.logic||'-'} 完整:${sb.completeness||'-'}` +
+                `</small>`;
+        }
+        return `<span class="badge bg-${fb.score >= 7 ? 'success' : fb.score >= 4 ? 'warning' : 'danger'} me-1">${fb.score||'-'}/10</span>` +
+               `${quality ? '<span class="badge bg-' + qualityColor + ' me-1">' + quality + '</span>' : ''}` +
+               `${fb.evaluation || ''}${breakdown}`;
+    } catch { return feedbackStr; }
+}
+
+async function createSession() {
+    const candId = document.getElementById('selectCandidate').value;
+    if (!candId) { showToast('请先添加候选人', 'warning'); return; }
+    
+    bootstrap.Modal.getInstance(document.getElementById('newSessionModal')).hide();
+    showAiLoading('AI 正在生成面试问题...', '正在分析候选人简历与岗位要求，请稍候');
+    try {
+        const res = await apiCall(`/api/interviews/generate/${candId}`, 'POST');
+        hideAiLoading();
+        if (res.code === 200) {
+            showToast('面试会话已创建，问题已生成');
+            loadSessions();
+            selectSession(res.data.session.id);
+        } else {
+            showToast(res.message, 'danger');
+        }
+    } catch(e) {
+        hideAiLoading();
+        showToast('网络错误', 'danger');
+    }
+}
+
+async function createNewRound() {
+    if (!currentSession) return;
+    if (!confirm('确定为该候选人创建新一轮面试会话？')) return;
+    
+    showAiLoading('AI 正在生成新一轮面试问题...', '正在结合上一轮表现重新设计问题，请稍候');
+    try {
+        const res = await apiCall(`/api/interviews/generate/${currentSession.candidate_id}`, 'POST');
+        hideAiLoading();
+        if (res.code === 200) {
+            showToast('新一轮面试会话已创建，问题已生成');
+            loadCandidates().then(() => loadSessions());
+            selectSession(res.data.session.id);
+        } else {
+            showToast(res.message, 'danger');
+        }
+    } catch(e) {
+        hideAiLoading();
+        showToast('网络错误', 'danger');
+    }
+}
+
+async function finishInterview() {
+    if (!confirm('确定结束面试并生成评价报告？')) return;
+    
+    showAiLoading('AI 正在生成面试评价报告...', '正在综合分析面试表现，请稍候');
+    try {
+        const res = await apiCall(`/api/interviews/${currentSession.id}/finish`, 'POST');
+        hideAiLoading();
+        if (res.code === 200) {
+            showToast('面试已结束，报告已生成');
+            showReport(res.data.report);
+            selectSession(currentSession.id);
+        } else {
+            showToast(res.message, 'danger');
+        }
+    } catch(e) {
+        hideAiLoading();
+        showToast('网络错误', 'danger');
+    }
+}
+
+function viewReport() {
+    if (!currentSession || !currentSession.report) {
+        showToast('暂无报告数据', 'warning');
+        return;
+    }
+    const report = typeof currentSession.report === 'string' ? JSON.parse(currentSession.report) : currentSession.report;
+    showReport(report);
+}
+
+function showReport(report) {
+    const dims = report.dimensions || {};
+    const recReason = report.recommendation_reason ? `<br><small class="text-muted">${report.recommendation_reason}</small>` : '';
+    const highlights = report.interview_highlights ? `
+        <h6 class="mt-3"><i class="bi bi-award text-info me-1"></i>面试亮点</h6>
+        <div class="row g-2 mb-3">
+            <div class="col-6"><div class="p-2 bg-white rounded text-center"><small class="text-success d-block">最佳回答</small>${report.interview_highlights.best_answer || '-'}</div></div>
+            <div class="col-6"><div class="p-2 bg-white rounded text-center"><small class="text-danger d-block">最弱回答</small>${report.interview_highlights.worst_answer || '-'}</div></div>
+        </div>` : '';
+    document.getElementById('reportContent').innerHTML = `
+        <div class="text-center mb-4">
+            <div class="badge bg-${report.overall_score >= 70 ? 'success' : report.overall_score >= 50 ? 'warning' : 'danger'} score-badge p-3">
+                综合评分: ${report.overall_score || 0} 分
+            </div>
+            <p class="mt-2 mb-0"><strong>招聘建议: ${report.recommendation || '-'}</strong>${recReason}</p>
+            <p class="text-muted mt-2">${report.summary || ''}</p>
+        </div>
+        <div class="ai-result">
+            <h6><i class="bi bi-bar-chart me-1"></i>维度评分</h6>
+            <div class="row g-2 mb-3">
+                ${Object.entries(dims).map(([k, v]) => `
+                    <div class="col-6 col-md-4">
+                        <div class="p-2 bg-white rounded text-center">
+                            <small class="text-muted d-block">${k}</small>
+                            <strong class="${v >= 7 ? 'text-success' : v >= 5 ? 'text-warning' : 'text-danger'}">${v}/10</strong>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+            
+            <h6><i class="bi bi-star text-success me-1"></i>优势</h6>
+            <ul>${(report.strengths || []).map(s => {
+                if (typeof s === 'string') return `<li>${s}</li>`;
+                return `<li>${s.point}${s.evidence ? ' <small class="text-muted">(' + s.evidence + ')</small>' : ''}</li>`;
+            }).join('')}</ul>
+            
+            <h6 class="mt-3"><i class="bi bi-exclamation-triangle text-warning me-1"></i>不足</h6>
+            <ul>${(report.weaknesses || []).map(w => {
+                if (typeof w === 'string') return `<li>${w}</li>`;
+                return `<li>${w.point}${w.evidence ? ' <small class="text-muted">(' + w.evidence + ')</small>' : ''}${w.suggestion ? '<br><small class="text-info"><i class="bi bi-lightbulb"></i> ' + w.suggestion + '</small>' : ''}</li>`;
+            }).join('')}</ul>
+            ${highlights}
+        </div>
+    `;
+    new bootstrap.Modal(document.getElementById('reportModal')).show();
+}
+
+loadCandidates().then(() => loadSessions());
+</script>
+{% endblock %}

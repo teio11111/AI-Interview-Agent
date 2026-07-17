@@ -1,0 +1,848 @@
+{% extends "base.html" %}
+{% block title %}候选人管理 - AI Interview Agent{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3><i class="bi bi-people"></i> 候选人管理</h3>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal">
+        <i class="bi bi-plus-lg"></i> 添加候选人
+    </button>
+</div>
+
+<!-- 岗位筛选 + 搜索 -->
+<div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+    <div class="d-flex gap-2 flex-wrap flex-grow-1" id="positionFilters">
+        <button class="btn btn-sm btn-primary active" onclick="filterPosition('all', this)">
+            <i class="bi bi-grid-3x3-gap"></i> 全部岗位
+        </button>
+    </div>
+    <div class="input-group" style="width: 220px;">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索候选人姓名" oninput="onSearch(this.value)" onchange="onSearch(this.value)">
+    </div>
+</div>
+
+<!-- 按岗位分组的候选人列表 -->
+<div id="candidateGroups"></div>
+<div id="emptyState" class="text-center py-5 d-none">
+    <i class="bi bi-inbox text-muted" style="font-size: 3rem;"></i>
+    <p class="text-muted mt-2">暂无候选人</p>
+</div>
+
+<!-- 添加候选人弹窗 -->
+<div class="modal fade" id="addModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">添加候选人</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">姓名 <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="newCandName" placeholder="候选人姓名">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">关联岗位 <span class="text-danger">*</span></label>
+                    <select class="form-select" id="newCandPosition"></select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">简历内容</label>
+                    <ul class="nav nav-tabs mb-2" role="tablist">
+                        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#pasteTab">粘贴文本</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#uploadTab">上传 PDF</a></li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="pasteTab">
+                            <textarea class="form-control" id="newResume" rows="5" placeholder="粘贴简历文本内容..."></textarea>
+                        </div>
+                        <div class="tab-pane fade" id="uploadTab">
+                            <input type="file" class="form-control" id="resumeFile" accept=".pdf">
+                            <small class="text-muted">支持 PDF 格式，最大 10MB</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="btnCreateCand" onclick="createCandidate()">添加</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- AI 分析结果弹窗 -->
+<div class="modal fade" id="aiModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><span class="badge badge-ai me-2"><i class="bi bi-robot"></i> AI</span>简历分析结果</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="aiResult"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 查看简历弹窗 -->
+<div class="modal fade" id="resumeModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-file-text me-2"></i>候选人简历</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="resumeContent"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 候选人对比弹窗 -->
+<div class="modal fade" id="compareModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-bar-chart-line me-2"></i>候选人对比分析</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="compareContent"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 多选工具栏（浮动） -->
+<div id="batchToolbar" class="position-fixed bottom-0 start-50 translate-middle-x p-3 d-none" style="z-index:1050;">
+    <div class="bg-white rounded-pill shadow-lg border px-4 py-2 d-flex align-items-center gap-3">
+        <span class="text-muted small"><i class="bi bi-check2-square me-1"></i>已选 <strong id="batchCount">0</strong> 人</span>
+        <button class="btn btn-sm btn-primary rounded-pill" onclick="openCompare()" id="compareBtn" disabled>
+            <i class="bi bi-bar-chart-line me-1"></i>对比
+        </button>
+        <button class="btn btn-sm btn-outline-danger rounded-pill" onclick="batchDelete()" id="batchDeleteBtn">
+            <i class="bi bi-trash me-1"></i>批量删除
+        </button>
+        <button class="btn btn-sm btn-outline-secondary rounded-pill" onclick="clearSelection()">
+            <i class="bi bi-x-lg"></i> 取消
+        </button>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+let positionsData = [];
+let candidatesCache = [];
+let sessionsCache = [];
+let activeFilter = 'all';
+let searchKeyword = '';
+let selectedSet = new Map(); // id -> {name, position_id}
+
+function onSearch(val) {
+    searchKeyword = val.trim().toLowerCase();
+    renderCandidates();
+}
+
+async function loadPositions() {
+    const res = await apiCall('/api/positions');
+    positionsData = res.data || [];
+    const select = document.getElementById('newCandPosition');
+    select.innerHTML = positionsData.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    
+    // 生成岗位筛选按钮
+    const filters = document.getElementById('positionFilters');
+    const allBtn = filters.querySelector('.btn-primary');
+    filters.innerHTML = '';
+    filters.appendChild(allBtn);
+    positionsData.forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-sm btn-outline-primary';
+        btn.innerHTML = `<i class="bi bi-briefcase"></i> ${p.name}`;
+        btn.onclick = () => filterPosition(p.id, btn);
+        filters.appendChild(btn);
+    });
+}
+
+function filterPosition(posId, btn) {
+    activeFilter = posId;
+    // 更新按钮样式
+    document.querySelectorAll('#positionFilters .btn').forEach(b => {
+        b.className = b.className.replace('btn-primary', 'btn-outline-primary').replace(' active', '');
+    });
+    btn.className = btn.className.replace('btn-outline-primary', 'btn-primary');
+    btn.classList.add('active');
+    renderCandidates();
+}
+
+async function loadCandidates() {
+    const [candRes, sessRes] = await Promise.all([
+        apiCall('/api/candidates'),
+        apiCall('/api/interviews/sessions')
+    ]);
+    candidatesCache = candRes.data || [];
+    sessionsCache = sessRes.data || [];
+    renderCandidates();
+}
+
+function renderCandidates() {
+    const groups = document.getElementById('candidateGroups');
+    const empty = document.getElementById('emptyState');
+    
+    if (!candidatesCache.length) {
+        groups.innerHTML = '';
+        empty.classList.remove('d-none');
+        return;
+    }
+    empty.classList.add('d-none');
+    
+    // 按岗位分组
+    let grouped = {};
+    candidatesCache.forEach(c => {
+        const pid = c.position_id;
+        if (!grouped[pid]) grouped[pid] = [];
+        grouped[pid].push(c);
+    });
+    
+    // 组内按匹配度降序排序
+    Object.values(grouped).forEach(arr => {
+        arr.sort((a, b) => (b.match_score || 0) - (a.match_score || 0));
+    });
+    
+    // 筛选
+    let posIds = activeFilter === 'all' ? Object.keys(grouped) : [activeFilter];
+    
+    // 搜索过滤
+    if (searchKeyword) {
+        const filtered = {};
+        posIds.forEach(pid => {
+            const cands = (grouped[pid] || []).filter(c => c.name.toLowerCase().includes(searchKeyword));
+            if (cands.length > 0) filtered[pid] = cands;
+        });
+        grouped = Object.fromEntries(Object.entries(filtered));
+        posIds = Object.keys(grouped);
+    }
+    
+    // 渲染每组
+    let html = '';
+    posIds.forEach(pid => {
+        const pos = positionsData.find(p => p.id === parseInt(pid));
+        const posName = pos ? pos.name : '未知岗位';
+        const cands = grouped[pid] || [];
+        if (!cands.length) return;
+        
+        html += `
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-briefcase me-1"></i>
+                    <strong>${posName}</strong>
+                    <span class="badge bg-secondary ms-2">${cands.length} 人</span>
+                </div>
+                <small class="text-muted">按匹配度排序</small>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width:35px"><input type="checkbox" class="form-check-input" title="全选/取消" onclick="toggleAll(this)"></th>
+                            <th style="width:40px">#</th>
+                            <th>姓名</th>
+                            <th>匹配度</th>
+                            <th>面试状态</th>
+                            <th>备注</th>
+                            <th>AI 分析</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${cands.map((c, i) => {
+                            const matchBadge = c.match_score 
+                                ? `<span class="badge bg-${c.match_score >= 70 ? 'success' : c.match_score >= 50 ? 'warning' : 'danger'} score-badge" style="font-size:0.9rem;">${c.match_score}分</span>`
+                                : '<span class="text-muted">-</span>';
+                            const aiBtn = c.ai_analysis
+                                ? `<button class="btn btn-sm btn-outline-primary" onclick="viewAnalysis(${c.id})"><i class="bi bi-eye"></i> 查看</button>`
+                                : `<button class="btn btn-sm btn-outline-secondary" onclick="analyzeCandidate(${c.id}, this)"><i class="bi bi-robot"></i> AI分析</button>`;
+                            const checked = selectedSet.has(c.id) ? 'checked' : '';
+                            // 面试状态
+                            const cSessions = sessionsCache.filter(s => s.candidate_id === c.id);
+                            let statusHtml = '<span class="badge bg-secondary">未面试</span>';
+                            if (cSessions.length > 0) {
+                                const latest = cSessions.sort((a,b) => (b.id||0)-(a.id||0))[0];
+                                const completedCount = cSessions.filter(s => s.status === 'completed').length;
+                                const hasInProgress = cSessions.some(s => s.status === 'in_progress');
+                                const hasPreparing = cSessions.some(s => s.status === 'preparing');
+                                if (hasInProgress) {
+                                    const round = completedCount + 1;
+                                    statusHtml = `<span class="badge bg-primary">${round === 1 ? '' : '第' + round + '轮 '}进行中</span>`;
+                                } else if (hasPreparing) {
+                                    const round = completedCount + 1;
+                                    statusHtml = `<span class="badge bg-warning text-dark">${round === 1 ? '' : '第' + round + '轮 '}待面试</span>`;
+                                } else if (latest.status === 'completed') {
+                                    statusHtml = `<span class="badge bg-success">已完成 ${completedCount} 轮</span>`;
+                                }
+                            }
+                            // 备注
+                            const notes = c.notes || '';
+                            const notesDisplay = notes ? `<span class="text-truncate d-inline-block" style="max-width:120px;vertical-align:middle;" title="${notes}">${notes}</span>` : '<span class="text-muted">-</span>';
+                            return `
+                            <tr>
+                                <td><input type="checkbox" class="form-check-input" ${checked} onchange="toggleSelect(${c.id}, '${c.name}', ${c.position_id})" onclick="event.stopPropagation()"></td>
+                                <td><span class="badge bg-${i === 0 && c.match_score >= 70 ? 'success' : 'light'} text-${i === 0 && c.match_score >= 70 ? '' : 'muted'}">${i + 1}</span></td>
+                                <td><strong>${c.name}</strong></td>
+                                <td>${matchBadge}</td>
+                                <td>${statusHtml}</td>
+                                <td><a href="#" onclick="editNotes(${c.id}, event)" class="text-decoration-none small">${notesDisplay} <i class="bi bi-pencil-square text-muted" style="font-size:0.7rem;"></i></a></td>
+                                <td>${aiBtn}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-info me-1" onclick="viewResume(${c.id})"><i class="bi bi-file-text"></i></button>
+                                    <button class="btn btn-sm btn-outline-danger" onclick="deleteCandidate(${c.id})"><i class="bi bi-trash"></i></button>
+                                </td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>`;
+    });
+    
+    groups.innerHTML = html;
+}
+
+function viewAnalysis(id) {
+    const c = candidatesCache.find(x => x.id === id);
+    if (!c || !c.ai_analysis) { showToast('无分析数据', 'warning'); return; }
+    apiCall('/api/interviews/sessions').then(res => {
+        const sessions = res.data || [];
+        const session = sessions.find(s => s.candidate_id === id);
+        showAiResult(c.ai_analysis, session);
+    });
+}
+
+function viewResume(id) {
+    const c = candidatesCache.find(x => x.id === id);
+    if (!c || !c.resume_text) { showToast('该候选人未填写简历', 'warning'); return; }
+    const pos = positionsData.find(p => p.id === c.position_id);
+    const posName = pos ? pos.name : '未知';
+    const lines = c.resume_text.split('\n').map(line => {
+        if (!line.trim()) return '';
+        if (line.match(/^[#\u2500-\u257f\-=*]/)) return `<h6 class="mt-2 mb-1 text-primary">${line}</h6>`;
+        return `<p class="mb-1">${line}</p>`;
+    }).join('');
+    document.getElementById('resumeContent').innerHTML = `
+        <div class="d-flex align-items-center mb-3 p-2 bg-light rounded">
+            <i class="bi bi-person-circle me-2" style="font-size:1.5rem;"></i>
+            <div>
+                <strong>${c.name}</strong>
+                <small class="text-muted ms-2">应聘：${posName}</small>
+                ${c.match_score ? `<span class="badge bg-${c.match_score >= 70 ? 'success' : 'warning'} ms-2">${c.match_score}分</span>` : ''}
+            </div>
+        </div>
+        <div class="p-3 bg-white border rounded" style="white-space: pre-wrap; font-size: 0.9rem; line-height: 1.6;">${lines || c.resume_text}</div>
+    `;
+    new bootstrap.Modal(document.getElementById('resumeModal')).show();
+}
+
+async function createCandidate() {
+    const name = document.getElementById('newCandName').value.trim();
+    const position_id = document.getElementById('newCandPosition').value;
+    if (!name) { showToast('请输入姓名', 'warning'); return; }
+    if (!position_id) { showToast('请先创建岗位', 'warning'); return; }
+    
+    let resume_text = document.getElementById('newResume').value;
+    
+    const fileInput = document.getElementById('resumeFile');
+    if (fileInput.files.length > 0) {
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        const uploadRes = await fetch('/api/candidates/upload-resume', { method: 'POST', body: formData });
+        const uploadData = await uploadRes.json();
+        if (uploadData.code === 200) {
+            resume_text = uploadData.data.resume_text;
+        } else {
+            showToast(uploadData.message, 'danger');
+            return;
+        }
+    }
+    
+    const btn = document.getElementById('btnCreateCand');
+    setLoading(btn, true);
+    
+    const res = await apiCall('/api/candidates', 'POST', {
+        name, position_id: parseInt(position_id), resume_text
+    });
+    
+    setLoading(btn, false);
+    
+    if (res.code === 201) {
+        showToast('候选人添加成功');
+        bootstrap.Modal.getInstance(document.getElementById('addModal')).hide();
+        document.getElementById('newCandName').value = '';
+        document.getElementById('newResume').value = '';
+        loadCandidates();
+    } else {
+        showToast(res.message, 'danger');
+    }
+}
+
+async function analyzeCandidate(id, btn) {
+    showAiLoading('AI 正在分析候选人简历...', '正在评估技能匹配度与岗位适配性，请稍候');
+    try {
+        const res = await apiCall(`/api/candidates/${id}/analyze`, 'POST');
+        hideAiLoading();
+        if (res.code === 200) {
+            showToast('AI 分析完成，面试会话已自动生成', 'success');
+            showAiResult(res.data.analysis, res.data.session);
+            loadCandidates();
+        } else {
+            showToast(res.message, 'danger');
+        }
+    } catch(e) {
+        hideAiLoading();
+        showToast('网络错误', 'danger');
+    }
+}
+
+function showAiResult(analysis, session) {
+    const data = typeof analysis === 'string' ? JSON.parse(analysis) : analysis;
+    const score = data.match_score || 0;
+    const scoreColor = score >= 70 ? 'success' : score >= 50 ? 'warning' : 'danger';
+    
+    // 构建隐性条件对照表 HTML
+    const mapping = data.implicit_requirement_mapping || [];
+    let mappingHtml = '';
+    if (mapping.length > 0) {
+        const statusBadge = (status) => {
+            const map = {
+                '匹配': 'success', '符合': 'success',
+                '有差距': 'warning', '部分匹配': 'warning', '一般': 'warning',
+                '差距较大': 'danger', '不匹配': 'danger',
+                '无法判断': 'secondary'
+            };
+            const cls = map[status] || 'secondary';
+            const icon = cls === 'success' ? 'check-circle' : cls === 'warning' ? 'exclamation-circle' : cls === 'danger' ? 'x-circle' : 'question-circle';
+            return `<span class="badge bg-${cls}"><i class="bi bi-${icon} me-1"></i>${status}</span>`;
+        };
+        mappingHtml = `
+        <div class="mt-4">
+            <h5 class="mb-3"><i class="bi bi-table me-1 text-primary"></i>隐性条件对照 <small class="text-muted fw-normal" style="font-size:0.75rem;">岗位需求 vs 候选人实际</small></h5>
+            <div class="table-responsive">
+                <table class="table table-sm table-bordered mb-0" style="font-size:0.85rem;">
+                    <thead class="table-dark">
+                        <tr>
+                            <th style="width:14%">维度</th>
+                            <th style="width:28%">岗位要求</th>
+                            <th style="width:28%">候选人实际</th>
+                            <th style="width:12%">匹配度</th>
+                            <th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${mapping.map(m => `
+                        <tr>
+                            <td class="fw-bold">${m.dimension || '-'}</td>
+                            <td>${m.position_requirement || '-'}</td>
+                            <td>${m.candidate_actual || '-'}</td>
+                            <td class="text-center">${statusBadge(m.match_status || '无法判断')}</td>
+                            <td class="text-muted small">${m.detail || ''}</td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>`;
+    }
+    
+    // 构建隐性条件分析 HTML
+    const cp = data.candidate_profile || {};
+    const confBadge = (c) => {
+        if (!c) return '';
+        const cls = c === 'high' ? 'success' : c === 'medium' ? 'warning' : 'secondary';
+        const txt = c === 'high' ? '高' : c === 'medium' ? '中' : '低';
+        return `<span class="badge bg-${cls} ms-1" style="font-size:0.65rem;" title="置信度">${txt}</span>`;
+    };
+    
+    let profileHtml = '';
+    if (Object.keys(cp).length > 0) {
+        const edu = cp.education || {};
+        const res = cp.residence || {};
+        const career = cp.career_direction || {};
+        const stability = cp.job_stability || {};
+        const emotional = cp.emotional_stability || {};
+        const comm = cp.communication_ability || {};
+        const team = cp.teamwork_style || {};
+        const learning = cp.learning_ability || {};
+        const auth = cp.resume_authenticity || {};
+        
+        const levelBadge = (level, type) => {
+            if (!level || level === '未明确') return '<span class="text-muted">未明确</span>';
+            const colors = {
+                '稳定': 'success', '一般': 'warning', '不稳定': 'danger',
+                '较好': 'success', '待观察': 'warning',
+                '强': 'success', '较弱': 'danger',
+                '真实': 'success', '有包装痕迹': 'warning', '明显包装': 'danger',
+                '高度匹配': 'success', '匹配': 'primary', '不匹配': 'danger'
+            };
+            return `<span class="badge bg-${colors[level] || 'secondary'}">${level}</span>`;
+        };
+        
+        profileHtml = `
+        <div class="mt-4">
+            <h5 class="mb-3"><i class="bi bi-person-lines-fill me-1 text-primary"></i>候选人画像</h5>
+            <div class="row g-2">
+                <div class="col-md-6">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-mortarboard me-1"></i>学历背景 ${confBadge(edu.confidence)}</div>
+                        <div>${edu.detail || '未明确'}</div>
+                        <div class="text-muted mt-1">层次: ${edu.school_tier || '-'} | 专业相关性: ${edu.major_relevance || '-'}</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-geo-alt me-1"></i>居住地 ${confBadge(res.confidence)}</div>
+                        <div>当前: ${res.current_city || '未明确'}</div>
+                        <div class="text-muted mt-1">迁移意愿: ${res.willingness_to_relocate || '-'} ${res.detail ? '| ' + res.detail : ''}</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-signpost-split me-1"></i>职业发展方向 ${confBadge(career.confidence)}</div>
+                        <div>${levelBadge(career.preferred_track)} ${career.detail || ''}</div>
+                        <div class="text-muted mt-1">与岗位匹配: ${levelBadge(career.alignment_with_role)}</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-shield-check me-1"></i>岗位稳定度 ${confBadge(stability.confidence)}</div>
+                        <div>${levelBadge(stability.level)} ${stability.detail || ''}</div>
+                        <div class="text-muted mt-1">平均在职: ${stability.avg_tenure || '-'} | 跳槽: ${stability.job_hops || '-'}次</div>
+                        ${(stability.red_flags || []).length ? `<div class="text-danger mt-1">${stability.red_flags.join(' | ')}</div>` : ''}
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-emoji-smile me-1"></i>情绪稳定性 ${confBadge(emotional.confidence)}</div>
+                        <div>${levelBadge(emotional.level)}</div>
+                        ${(emotional.signals || []).length ? `<div class="text-muted mt-1">${emotional.signals.join(', ')}</div>` : ''}
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-chat-square-text me-1"></i>沟通能力 ${confBadge(comm.confidence)}</div>
+                        <div>${levelBadge(comm.level)}</div>
+                        <div class="text-muted mt-1">${comm.detail || ''}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-people me-1"></i>协作风格 ${confBadge(team.confidence)}</div>
+                        <div>${team.style || '未明确'}</div>
+                        <div class="text-muted mt-1">${team.detail || ''}</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-lightbulb me-1"></i>学习能力 ${confBadge(learning.confidence)}</div>
+                        <div>${levelBadge(learning.level)} ${learning.detail || ''}</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="p-2 bg-light rounded small">
+                        <div class="fw-bold mb-1"><i class="bi bi-file-earmark-check me-1"></i>简历真实度 ${confBadge(auth.confidence)}</div>
+                        <div>${levelBadge(auth.level)} ${auth.detail || ''}</div>
+                        ${(auth.packaging_signals || []).length ? `<div class="text-warning mt-1">包装信号: ${auth.packaging_signals.join(', ')}</div>` : ''}
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    }
+    
+    const sessionHtml = session ? `
+        <div class="alert alert-success mt-3">
+            <i class="bi bi-check-circle me-1"></i>
+            <strong>面试会话已自动生成！</strong> 点击 <a href="/interview" class="alert-link">前往面试工作台</a> 开始面试
+        </div>
+    ` : '';
+    
+    document.getElementById('aiResult').innerHTML = `
+        <div class="text-center mb-4">
+            <div class="badge bg-${scoreColor} score-badge p-3">${score} 分</div>
+            <p class="text-muted mt-2">${data.summary || ''}</p>
+        </div>
+        <div class="ai-result">
+            <h6><i class="bi bi-check-circle text-success me-1"></i>匹配技能</h6>
+            <div class="mb-3">${(data.matched_skills || []).map(s => {
+                const name = typeof s === 'string' ? s : s.skill;
+                const prof = typeof s === 'object' && s.proficiency ? ' (' + s.proficiency + ')' : '';
+                return `<span class="badge bg-success me-1 mb-1">${name}${prof}</span>`;
+            }).join('') || '<span class="text-muted">无</span>'}</div>
+            
+            <h6><i class="bi bi-x-circle text-danger me-1"></i>缺失技能</h6>
+            <div class="mb-3">${(data.missing_skills || []).map(s => {
+                const name = typeof s === 'string' ? s : s.skill;
+                const imp = typeof s === 'object' && s.importance ? ' (' + s.importance + ')' : '';
+                const cls = imp.includes('核心') ? 'danger' : imp.includes('重要') ? 'warning' : 'secondary';
+                return `<span class="badge bg-${cls} me-1 mb-1">${name}${imp}</span>`;
+            }).join('') || '<span class="text-muted">无</span>'}</div>
+            
+            <h6><i class="bi bi-star text-warning me-1"></i>优势</h6>
+            <ul>${(data.strengths || []).map(s => {
+                if (typeof s === 'string') return `<li>${s}</li>`;
+                return `<li>${s.point}${s.evidence ? ' <small class="text-muted">(' + s.evidence + ')</small>' : ''}</li>`;
+            }).join('')}</ul>
+            
+            <h6 class="mt-3"><i class="bi bi-exclamation-triangle text-danger me-1"></i>风险</h6>
+            <ul>${(data.risks || []).map(r => {
+                if (typeof r === 'string') return `<li>${r}</li>`;
+                const sevColor = r.severity === '高' ? 'danger' : r.severity === '中' ? 'warning' : 'secondary';
+                return `<li><span class="badge bg-${sevColor} me-1">${r.severity || ''}</span>${r.risk}${r.detail ? ' - ' + r.detail : ''}</li>`;
+            }).join('')}</ul>
+        </div>
+        ${mappingHtml}
+        ${profileHtml}
+        <div class="ai-result mt-3">
+            <h6><i class="bi bi-chat-left-text me-1"></i>建议面试问题</h6>
+            <ul>${(data.suggested_questions || []).map(q => {
+                if (typeof q === 'string') return `<li>${q}</li>`;
+                return `<li>${q.topic || q.example_question || JSON.stringify(q)}${q.reason ? ' <small class="text-muted">(' + q.reason + ')</small>' : ''}</li>`;
+            }).join('')}</ul>
+        </div>
+        ${sessionHtml}
+    `;
+    new bootstrap.Modal(document.getElementById('aiModal')).show();
+}
+
+async function deleteCandidate(id) {
+    if (!confirm('确定删除该候选人？')) return;
+    const res = await apiCall(`/api/candidates/${id}`, 'DELETE');
+    if (res.code === 200) {
+        showToast('删除成功');
+        loadCandidates();
+    } else {
+        showToast(res.message, 'danger');
+    }
+}
+
+loadPositions().then(() => loadCandidates());
+
+// === 多选功能（对比 + 批量删除） ===
+function toggleSelect(id, name, positionId) {
+    if (selectedSet.has(id)) {
+        selectedSet.delete(id);
+    } else {
+        selectedSet.set(id, { name, position_id: positionId });
+    }
+    updateToolbar();
+}
+
+function toggleAll(checkbox) {
+    // 找到当前表格的所有候选人
+    const table = checkbox.closest('table');
+    const rows = table.querySelectorAll('tbody input[type=checkbox]');
+    const allChecked = checkbox.checked;
+    rows.forEach(cb => {
+        cb.checked = allChecked;
+        cb.dispatchEvent(new Event('change'));
+    });
+}
+
+function updateToolbar() {
+    const toolbar = document.getElementById('batchToolbar');
+    const count = selectedSet.size;
+    document.getElementById('batchCount').textContent = count;
+    // 对比需要同一岗位且>=2人
+    let canCompare = false;
+    if (count >= 2 && count <= 3) {
+        const pids = [...selectedSet.values()].map(v => v.position_id);
+        canCompare = pids.every(p => p === pids[0]);
+    }
+    document.getElementById('compareBtn').disabled = !canCompare;
+    if (count > 0) {
+        toolbar.classList.remove('d-none');
+    } else {
+        toolbar.classList.add('d-none');
+    }
+}
+
+function clearSelection() {
+    selectedSet.clear();
+    updateToolbar();
+    renderCandidates();
+}
+
+async function batchDelete() {
+    const count = selectedSet.size;
+    if (count === 0) return;
+    if (!confirm(`确定删除选中的 ${count} 名候选人？此操作不可撤销。`)) return;
+    const ids = [...selectedSet.keys()];
+    try {
+        const res = await apiCall('/api/candidates/batch-delete', 'POST', { ids });
+        if (res.code === 200) {
+            showToast(`已成功删除 ${res.data.count} 名候选人`);
+            selectedSet.clear();
+            updateToolbar();
+            loadCandidates();
+        } else {
+            showToast(res.message, 'danger');
+        }
+    } catch(e) {
+        showToast('网络错误', 'danger');
+    }
+}
+
+async function editNotes(id, event) {
+    event.preventDefault();
+    const c = candidatesCache.find(x => x.id === id);
+    if (!c) return;
+    const currentNotes = c.notes || '';
+    const newNotes = prompt('编辑备注：', currentNotes);
+    if (newNotes === null) return; // cancelled
+    try {
+        const res = await apiCall(`/api/candidates/${id}/notes`, 'PATCH', { notes: newNotes });
+        if (res.code === 200) {
+            c.notes = newNotes;
+            renderCandidates();
+            showToast('备注已更新');
+        } else {
+            showToast(res.message, 'danger');
+        }
+    } catch(e) {
+        showToast('网络错误', 'danger');
+    }
+}
+
+async function openCompare() {
+    if (selectedSet.size < 2) return;
+    // 检查是否同岗位
+    const pids = [...selectedSet.values()].map(v => v.position_id);
+    if (!pids.every(p => p === pids[0])) {
+        showToast('请选择同一岗位的候选人进行对比', 'warning');
+        return;
+    }
+    if (selectedSet.size > 3) {
+        showToast('最多选择 3 人进行对比', 'warning');
+        return;
+    }
+    const ids = [...selectedSet.keys()];
+    const cands = ids.map(id => candidatesCache.find(c => c.id === id)).filter(Boolean);
+    
+    // 使用缓存的会话数据
+    const sessionsData = sessionsCache;
+    
+    const colors = ['#4f46e5', '#10b981', '#f59e0b'];
+    const colorBgs = ['rgba(79,70,229,0.15)', 'rgba(16,185,129,0.15)', 'rgba(245,158,11,0.15)'];
+    
+    // 构建对比卡片
+    let cardsHtml = '<div class="row g-3 mb-4">';
+    cands.forEach((c, i) => {
+        const analysis = c.ai_analysis ? (typeof c.ai_analysis === 'string' ? JSON.parse(c.ai_analysis) : c.ai_analysis) : null;
+        const session = sessionsData.find(s => s.candidate_id === c.id);
+        const report = session && session.report ? (typeof session.report === 'string' ? JSON.parse(session.report) : session.report) : null;
+        
+        const matchedCount = analysis ? (analysis.matched_skills || []).length : 0;
+        const missingCount = analysis ? (analysis.missing_skills || []).length : 0;
+        const strengthsCount = analysis ? (analysis.strengths || []).length : 0;
+        const overallScore = report ? (report.overall_score || 0) : '-';
+        const scoreCls = overallScore >= 70 ? 'success' : overallScore >= 50 ? 'warning' : overallScore === '-' ? 'secondary' : 'danger';
+        
+        cardsHtml += `
+        <div class="col">
+            <div class="card h-100" style="border-top: 3px solid ${colors[i]}">
+                <div class="card-body">
+                    <div class="text-center mb-3">
+                        <div class="rounded-circle d-inline-flex align-items-center justify-content-center mb-2" style="width:50px;height:50px;background:${colorBgs[i]};color:${colors[i]};font-weight:700;font-size:1.2rem;">${c.name[0]}</div>
+                        <h6 class="mb-0">${c.name}</h6>
+                    </div>
+                    <div class="text-center mb-3">
+                        <span class="badge bg-${c.match_score >= 70 ? 'success' : c.match_score >= 50 ? 'warning' : 'danger'} p-2" style="font-size:1rem;">匹配度 ${c.match_score || '-'}分</span>
+                        ${report ? `<span class="badge bg-${scoreCls} p-2 ms-1" style="font-size:1rem;">面试 ${overallScore}分</span>` : ''}
+                    </div>
+                    <div class="small">
+                        <div class="d-flex justify-content-between mb-1"><span class="text-muted">匹配技能</span><span class="text-success fw-bold">${matchedCount} 项</span></div>
+                        <div class="d-flex justify-content-between mb-1"><span class="text-muted">缺失技能</span><span class="text-danger fw-bold">${missingCount} 项</span></div>
+                        <div class="d-flex justify-content-between mb-1"><span class="text-muted">优势数量</span><span class="text-primary fw-bold">${strengthsCount} 项</span></div>
+                        <div class="d-flex justify-content-between mb-1"><span class="text-muted">面试状态</span><span>${report ? '已完成' : session ? '进行中' : '未面试'}</span></div>
+                    </div>
+                    ${analysis ? `<hr class="my-2"><div class="small"><strong class="text-success">优势：</strong><ul class="mb-1 ps-3">${(analysis.strengths || []).slice(0, 3).map(s => `<li>${typeof s === 'string' ? s : s.point || ''}</li>`).join('')}</ul></div>` : ''}
+                    ${analysis ? `<div class="small"><strong class="text-danger">不足：</strong><ul class="mb-0 ps-3">${(analysis.risks || analysis.weaknesses || []).slice(0, 3).map(s => `<li>${typeof s === 'string' ? s : s.risk || s.point || ''}</li>`).join('')}</ul></div>` : ''}
+                </div>
+            </div>
+        </div>`;
+    });
+    cardsHtml += '</div>';
+    
+    // 雷达图容器
+    const radarHtml = '<div class="card mb-3"><div class="card-header"><i class="bi bi-bullseye me-1"></i>能力维度对比</div><div class="card-body"><canvas id="compareRadar" height="300"></canvas></div></div>';
+    
+    // 匹配技能交叉对比
+    const allSkills = new Set();
+    const skillMatrix = {};
+    cands.forEach(c => {
+        const a = c.ai_analysis ? (typeof c.ai_analysis === 'string' ? JSON.parse(c.ai_analysis) : c.ai_analysis) : null;
+        if (!a) return;
+        skillMatrix[c.id] = { matched: new Set(), missing: new Set() };
+        (a.matched_skills || []).forEach(s => { const name = typeof s === 'string' ? s : s.skill; allSkills.add(name); skillMatrix[c.id].matched.add(name); });
+        (a.missing_skills || []).forEach(s => { const name = typeof s === 'string' ? s : s.skill; allSkills.add(name); skillMatrix[c.id].missing.add(name); });
+    });
+    
+    let skillTableHtml = '';
+    if (allSkills.size > 0) {
+        skillTableHtml = `<div class="card mb-3"><div class="card-header"><i class="bi bi-grid-3x3 me-1"></i>技能交叉对比</div><div class="card-body p-0"><div class="table-responsive"><table class="table table-sm table-bordered mb-0" style="font-size:0.85rem;"><thead class="table-light"><tr><th>技能</th>${cands.map(c => `<th class="text-center">${c.name}</th>`).join('')}</tr></thead><tbody>`;
+        [...allSkills].sort().forEach(skill => {
+            skillTableHtml += `<tr><td>${skill}</td>`;
+            cands.forEach(c => {
+                const m = skillMatrix[c.id];
+                if (m && m.matched.has(skill)) skillTableHtml += '<td class="text-center bg-success bg-opacity-10"><i class="bi bi-check-circle text-success"></i></td>';
+                else if (m && m.missing.has(skill)) skillTableHtml += '<td class="text-center bg-danger bg-opacity-10"><i class="bi bi-x-circle text-danger"></i></td>';
+                else skillTableHtml += '<td class="text-center text-muted">-</td>';
+            });
+            skillTableHtml += '</tr>';
+        });
+        skillTableHtml += '</tbody></table></div></div></div>';
+    }
+    
+    document.getElementById('compareContent').innerHTML = cardsHtml + radarHtml + skillTableHtml;
+    new bootstrap.Modal(document.getElementById('compareModal')).show();
+    
+    // 渲染雷达图
+    setTimeout(() => {
+        const dimensions = {};
+        const dimData = {};
+        cands.forEach(c => {
+            const session = sessionsData.find(s => s.candidate_id === c.id);
+            const report = session && session.report ? (typeof session.report === 'string' ? JSON.parse(session.report) : session.report) : null;
+            if (report && report.dimensions) {
+                Object.entries(report.dimensions).forEach(([k, v]) => {
+                    if (!dimensions[k]) dimensions[k] = true;
+                    if (!dimData[c.id]) dimData[c.id] = {};
+                    dimData[c.id][k] = v;
+                });
+            }
+        });
+        
+        const dimNames = Object.keys(dimensions);
+        if (dimNames.length > 0) {
+            new Chart(document.getElementById('compareRadar'), {
+                type: 'radar',
+                data: {
+                    labels: dimNames,
+                    datasets: cands.map((c, i) => ({
+                        label: c.name,
+                        data: dimNames.map(d => (dimData[c.id] && dimData[c.id][d]) || 0),
+                        borderColor: colors[i],
+                        backgroundColor: colorBgs[i],
+                        borderWidth: 2,
+                        pointRadius: 4
+                    }))
+                },
+                options: {
+                    responsive: true,
+                    scales: { r: { min: 0, max: 10, ticks: { stepSize: 2 } } },
+                    plugins: { legend: { position: 'bottom' } }
+                }
+            });
+        } else {
+            document.getElementById('compareRadar').parentElement.innerHTML = '<p class="text-muted text-center py-4">暂无面试维度评分数据，请先完成面试评价</p>';
+        }
+    }, 300);
+}
+</script>
+{% endblock %}
