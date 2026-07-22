@@ -90,6 +90,10 @@ async function loadPositions() {
         return;
     }
     
+    // 存储岗位数据供查看按钮使用
+    window._positionsData = {};
+    res.data.forEach(p => { window._positionsData[p.id] = p; });
+    
     empty.classList.add('d-none');
     list.innerHTML = res.data.map(p => `
         <tr>
@@ -98,7 +102,8 @@ async function loadPositions() {
             <td><span class="text-muted">${p.tech_requirements || '-'}</span></td>
             <td>
                 ${p.ai_analysis 
-                    ? `<button class="btn btn-sm btn-outline-primary" onclick='showAiResult(${JSON.stringify(p.ai_analysis)})'><i class="bi bi-eye"></i> 查看</button>`
+                    ? `<button class="btn btn-sm btn-outline-primary" onclick="showAiResultById(${p.id})"><i class="bi bi-eye"></i> 查看</button>
+                       <button class="btn btn-sm btn-outline-secondary ms-1" onclick="analyzePosition(${p.id}, this)"><i class="bi bi-arrow-repeat"></i> 重新分析</button>`
                     : `<button class="btn btn-sm btn-outline-secondary" onclick="analyzePosition(${p.id}, this)"><i class="bi bi-robot"></i> AI分析</button>`
                 }
             </td>
@@ -148,6 +153,15 @@ async function analyzePosition(id, btn) {
             showAiResult(payload.result);
         }
     });
+}
+
+function showAiResultById(id) {
+    const p = window._positionsData[id];
+    if (!p || !p.ai_analysis) {
+        showToast('暂无分析结果', 'warning');
+        return;
+    }
+    showAiResult(p.ai_analysis);
 }
 
 function showAiResult(analysis) {

@@ -86,14 +86,23 @@ class SoftInterviewerAgent(BaseAgent):
 - 过度夸大自己贡献
 - 无法承认错误
 
+## ❗ 评分校准标准（严格执行）
+- **9-10分**：表达清晰有条理，逻辑严密，有具体例子支撑，展示批判性思维
+- **7-8分**：表达基本清晰，有一定逻辑，但缺少具体例子
+- **5-6分**：表达一般，逻辑不够清晰，有些跑题或空泛
+- **3-4分**：表达混乱，逻辑不清，明显跑题
+- **1-2分**：答非所问，无法组织语言
+
+**重要：不要客气，回答差就给低分。大多数普通回答应该在 4-6 分，只有真正优秀的回答才给 7 分以上。**
+
 ## 输出格式（严格 JSON）
 {{
-    "soft_score": 7,
+    "soft_score": 5,
     "score_breakdown": {{
-        "logic": 7,
-        "communication": 8,
-        "completeness": 6,
-        "learning_attitude": 7
+        "logic": 5,
+        "communication": 6,
+        "completeness": 4,
+        "learning_attitude": 5
     }},
     "soft_evaluation": "2-3句话的综合素质评估",
     "soft_follow_ups": [

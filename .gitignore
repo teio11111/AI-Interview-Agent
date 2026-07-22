@@ -35,6 +35,18 @@ test_*.py
 
 # Logs
 *.log
+*.bak
+flask.log.bak
+
+# 部署产物（按需生成，不入库）
+deploy.zip
+deploy_lastest.zip
+
+# 测试截图
+check_cands.png
+
+# Word 临时文件（打开 docx 时会生成，关团后自动删除）
+~*
 # Python
 __pycache__/
 *.py[cod]

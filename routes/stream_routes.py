@@ -69,6 +69,12 @@ def stream_position_analysis(position_id):
                         position.name, position.tech_requirements, position.jd_content,
                         on_progress=on_progress
                     )
+                    # 保存分析结果到数据库
+                    if result_holder['result']:
+                        pos = PositionRepository.find_by_id(position_id)
+                        if pos:
+                            pos.ai_analysis = json.dumps(result_holder['result'], ensure_ascii=False)
+                            PositionRepository.update(pos)
                 except Exception as e:
                     result_holder['error'] = str(e)
                 finally:
@@ -183,34 +189,46 @@ def stream_candidate_analysis(candidate_id):
         def worker():
             with app.app_context():
                 try:
+                    # 在 worker 线程内重新加载对象，避免跨线程 DetachedInstanceError
+                    cand = CandidateRepository.find_by_id(candidate_id)
+                    pos = PositionRepository.find_by_id(cand.position_id)
+                    
                     # 阶段A: 简历评估 (3+1)
                     from services.resume_service import ResumeService
                     result_holder['resume'] = ResumeService.analyze_resume(
-                        position, candidate.resume_text, candidate.name
+                        pos, cand.resume_text, cand.name
                     )
                     if not result_holder['resume']:
                         result_holder['error'] = '简历评估失败'
                         return
                     # 保存简历分析结果
-                    candidate.ai_analysis = json.dumps(result_holder['resume'], ensure_ascii=False)
-                    candidate.match_score = result_holder['resume'].get('match_score', 0)
-                    CandidateRepository.update(candidate)
+                    cand.ai_analysis = json.dumps(result_holder['resume'], ensure_ascii=False)
+                    cand.match_score = result_holder['resume'].get('match_score', 0)
+                    CandidateRepository.update(cand)
 
                     # 阶段B: 出题 (3+1)
+                    pos_analysis = None
+                    if pos.ai_analysis:
+                        try:
+                            pos_analysis = json.loads(pos.ai_analysis) if isinstance(pos.ai_analysis, str) else pos.ai_analysis
+                        except Exception:
+                            pass
+                    
                     result_holder['questions'] = InterviewService.generate_questions(
-                        position, candidate, position_analysis,
-                        result_holder['resume'], candidate.resume_text,
+                        pos, cand, pos_analysis,
+                        result_holder['resume'], cand.resume_text,
                         on_progress=on_progress
                     )
                     if result_holder['questions']:
                         # 创建面试会话
                         session = InterviewSession(
-                            candidate_id=candidate.id,
+                            candidate_id=cand.id,
                             status=SessionStatus.PREPARING,
                             questions_plan=json.dumps(result_holder['questions'], ensure_ascii=False)
                         )
                         InterviewRepository.save_session(session)
-                        result_holder['session'] = session
+                        # 在 worker 线程内序列化 session，避免 DetachedInstanceError
+                        result_holder['session_dict'] = session.to_dict()
                 except Exception as e:
                     result_holder['error'] = str(e)
                 finally:
@@ -233,7 +251,7 @@ def stream_candidate_analysis(candidate_id):
         elif result_holder['resume']:
             yield _sse_event('complete', {
                 'result': result_holder['resume'],
-                'session': result_holder['session'].to_dict() if result_holder['session'] else None
+                'session': result_holder.get('session_dict')
             })
         else:
             yield _sse_event('error', {'message': '候选人分析失败'})
@@ -299,14 +317,29 @@ def stream_question_generation(candidate_id):
         if result_holder['error']:
             yield _sse_event('error', {'message': result_holder['error']})
         elif result_holder['result']:
-            # 自动创建面试会话并保存出题结果
+            # 自动创建或复用面试会话并保存出题结果
             try:
-                session = InterviewSession(
-                    candidate_id=candidate_id,
-                    status=SessionStatus.PREPARING,
-                    questions_plan=json.dumps(result_holder['result'], ensure_ascii=False)
-                )
-                InterviewRepository.save_session(session)
+                # 检查是否已有 preparing 状态的 session，有则复用
+                existing_sessions = InterviewRepository.find_sessions_by_candidate(candidate_id)
+                preparing_session = None
+                for s in existing_sessions:
+                    if s.status == SessionStatus.PREPARING:
+                        preparing_session = s
+                        break
+                
+                if preparing_session:
+                    # 复用已有 session，更新出题计划
+                    preparing_session.questions_plan = json.dumps(result_holder['result'], ensure_ascii=False)
+                    InterviewRepository.update_session(preparing_session)
+                    session = preparing_session
+                else:
+                    # 创建新 session
+                    session = InterviewSession(
+                        candidate_id=candidate_id,
+                        status=SessionStatus.PREPARING,
+                        questions_plan=json.dumps(result_holder['result'], ensure_ascii=False)
+                    )
+                    InterviewRepository.save_session(session)
                 yield _sse_event('complete', {'result': result_holder['result'], 'session': session.to_dict()})
             except Exception as e:
                 yield _sse_event('error', {'message': f'出题成功但会话创建失败: {e}'})
@@ -381,7 +414,9 @@ def stream_dialog_evaluation(session_id):
 @stream_bp.route('/report/<int:session_id>', methods=['POST'])
 @login_required(role='admin')
 def stream_report_generation(session_id):
-    """SSE: 评价报告生成流式推送"""
+    """SSE: 评价报告生成流式推送（板块切分 + 3+1 评估）"""
+    from models.interview import InterviewTopic
+
     session = InterviewRepository.find_session_by_id(session_id)
     if not session:
         return error('面试会话不存在', 404)
@@ -389,13 +424,12 @@ def stream_report_generation(session_id):
     candidate = CandidateRepository.find_by_id(session.candidate_id)
     position = PositionRepository.find_by_id(candidate.position_id)
 
-    # 拼接全部对话
+    # 拼接全部对话（供板块切分师使用）
     dialogs = InterviewRepository.find_dialogs_by_session(session_id)
-    dialog_lines = []
-    for d in dialogs:
-        tag = f" [追问自Q{d.parent_seq}]" if d.parent_seq else ""
-        dialog_lines.append(f"Q{d.seq}{tag}: {d.question}\nA{d.seq}: {d.answer}")
-    full_dialogs = '\n'.join(dialog_lines)
+    full_dialogs = [
+        {'seq': d.seq, 'question': d.question or '', 'answer': d.answer or ''}
+        for d in dialogs
+    ]
 
     # 解析出题策略
     questions_plan = None
@@ -408,27 +442,73 @@ def stream_report_generation(session_id):
     def generate():
         q, on_progress = _create_progress_bridge()
         app = current_app._get_current_object()
-        result_holder = {'result': None, 'error': None}
-        
+        result_holder = {'result': None, 'error': None, 'topics': None}
+
         def worker():
             with app.app_context():
                 try:
-                    # 更新会话状态为已完成
-                    session.status = SessionStatus.COMPLETED
-                    InterviewRepository.update_session(session)
-                    result_holder['result'] = InterviewService.generate_report(
-                        position, candidate.name, full_dialogs,
+                    # 1) 更新会话状态为已完成
+                    sess = InterviewRepository.find_session_by_id(session_id)
+                    sess.status = SessionStatus.COMPLETED
+                    InterviewRepository.update_session(sess)
+
+                    # 2) 板块切分（单Agent）
+                    seg_result = InterviewService.segment_topics(
+                        candidate.name, position.name, full_dialogs,
+                        on_progress=on_progress
+                    )
+                    topics = (seg_result or {}).get('topics', []) if seg_result else []
+                    logger.info(f'[stream_report] 切分出 {len(topics)} 个板块')
+
+                    # 清理旧板块并保存新板块（save_topic 会同时回填 dialog.topic_id）
+                    InterviewRepository.delete_topics_by_session(session_id)
+                    saved_topics = []
+                    for t in topics:
+                        topic = InterviewTopic(
+                            session_id=session_id,
+                            topic_index=t.get('topic_index', len(saved_topics) + 1),
+                            title=(t.get('topic_title') or t.get('title') or '未命名板块')[:120],
+                            summary=t.get('topic_summary') or t.get('summary') or '',
+                            dialog_ids_json=json.dumps(t.get('dialog_indexes') or t.get('dialog_ids') or [], ensure_ascii=False)
+                        )
+                        InterviewRepository.save_topic(topic)
+                        saved_topics.append(topic)
+
+                    # 3) 以板块摘要作为 3+1 评估输入
+                    if saved_topics:
+                        topic_blocks = [
+                            f"### 板块 {t.topic_index}：{t.title}\n{t.summary}"
+                            for t in saved_topics
+                        ]
+                        full_text = '\n\n'.join(topic_blocks)
+                    else:
+                        # 降级：原始拼接
+                        lines = []
+                        for d in dialogs:
+                            tag = f" [追问自Q{d.parent_seq}]" if d.parent_seq else ""
+                            lines.append(f"Q{d.seq}{tag}: {d.question}\nA{d.seq}: {d.answer}")
+                        full_text = '\n'.join(lines)
+
+                    # 4) 3+1 多智能体并行评估
+                    result = InterviewService.generate_report(
+                        position, candidate.name, full_text,
                         questions_plan=questions_plan,
                         on_progress=on_progress
                     )
+                    # 附加板块信息到报告（供前端一次性渲染使用）
+                    if result and isinstance(result, dict):
+                        result['topics'] = [t.to_dict() for t in saved_topics]
+                    result_holder['result'] = result
+                    result_holder['topics'] = [t.to_dict() for t in saved_topics]
                 except Exception as e:
+                    logger.error(f'[stream_report] 失败: {e}')
                     result_holder['error'] = str(e)
                 finally:
                     q.put('__DONE__')
-        
+
         t = threading.Thread(target=worker, daemon=True)
         t.start()
-        
+
         while True:
             try:
                 event = q.get(timeout=180)
@@ -437,17 +517,21 @@ def stream_report_generation(session_id):
                 yield _sse_event('progress', event)
             except queue.Empty:
                 yield f": keepalive\n\n"
-        
+
         if result_holder['error']:
             yield _sse_event('error', {'message': result_holder['error']})
         elif result_holder['result']:
             # 保存报告到会话
             try:
-                session.report = json.dumps(result_holder['result'], ensure_ascii=False) if isinstance(result_holder['result'], dict) else result_holder['result']
-                InterviewRepository.update_session(session)
+                sess = InterviewRepository.find_session_by_id(session_id)
+                sess.report = json.dumps(result_holder['result'], ensure_ascii=False) if isinstance(result_holder['result'], dict) else result_holder['result']
+                InterviewRepository.update_session(sess)
             except Exception as e:
                 logger.error(f'报告保存失败: {e}')
-            yield _sse_event('complete', {'result': result_holder['result']})
+            yield _sse_event('complete', {
+                'result': result_holder['result'],
+                'topics': result_holder.get('topics') or []
+            })
         else:
             yield _sse_event('error', {'message': '评价报告生成失败'})
 

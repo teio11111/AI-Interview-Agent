@@ -17,12 +17,15 @@ class SkillQuestionerAgent(BaseAgent):
 - 用真实工作场景切入："假设线上系统出现xxx问题，怎么排查？"
 - 针对候选人"精通"的技能出 hard 题验证
 - 关注"能不能做"而非"知不知道"
+- **问题要精简**：一道题最多聚焦 2 个功能点/技术点/决策点，不要大而泛
+- **必须给出回答方向**：每道题附 2-4 个关键词/回答方向，便于面试官/候选人把握要点
 
 工作原则：
 - 题目必须基于候选人简历中声称掌握的技能
 - 场景要真实、具体、有约束条件
 - 问题设计应能区分"背答案"和"真正理解"
 - 每道题预设追问方向
+- 每道题必须包含 answer_directions 字段（2-4 个回答关键词/方向）
 
 请始终以严格的 JSON 格式输出，不要输出任何解释性文字。"""
 
@@ -42,6 +45,10 @@ class SkillQuestionerAgent(BaseAgent):
         """
         prompt = f"""## 任务
 你是技能验证出题官。请针对候选人声称掌握的核心技能，设计 2 道**实操场景验证题**。
+
+## 精简原则（重要）
+- 一道题最多聚焦 2 个功能点/技术点，避免「请系统性地讲讲你对 X 的理解」这种大题
+- 例：「Redis 的缓存淘汰策略怎么选？什么时候用 LRU vs LFU？」比「Redis 性能怎么优化」更聚焦
 
 ## 岗位信息
 - 岗位名称：{position_name}
@@ -79,7 +86,7 @@ class SkillQuestionerAgent(BaseAgent):
 {{
     "questions": [
         {{
-            "question": "具体场景题（必须有背景、问题、约束）",
+            "question": "具体场景题（必须有背景、问题、约束，单题最多2个技术点）",
             "category": "技能验证",
             "difficulty": "medium/hard",
             "resume_reference": "简历中声称掌握该技能的原文",
@@ -87,7 +94,8 @@ class SkillQuestionerAgent(BaseAgent):
             "intent": "这道题想验证什么能力",
             "expected_depth": "好的回答应该包含什么",
             "follow_up_hints": ["回答好可追问什么", "回答模糊应追问什么"],
-            "red_flag_answers": ["什么样的回答说明其实不会"]
+            "red_flag_answers": ["什么样的回答说明其实不会"],
+            "answer_directions": ["回答关键词/方向1", "回答关键词/方向2", "回答关键词/方向3", "回答关键词/方向4"]
         }}
     ]
 }}"""

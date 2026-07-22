@@ -1,0 +1,1275 @@
+{% extends "base.html" %}
+
+{% block title %}实时面试 - AI Interview Agent{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-3">
+    <!-- 顶部：面试信息栏 -->
+    <div class="card mb-3">
+        <div class="card-body py-2">
+            <div class="d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-3">
+                    <h5 class="mb-0"><i class="bi bi-mic-fill text-danger me-2"></i>实时面试</h5>
+                    <div class="d-flex align-items-center gap-2">
+                        <label class="form-label mb-0 small text-muted">岗位:</label>
+                        <select class="form-select form-select-sm" id="selectPosition" style="width:160px;" onchange="onPositionChange()">
+                            <option value="">-- 全部岗位 --</option>
+                        </select>
+                        <label class="form-label mb-0 small text-muted">候选人:</label>
+                        <select class="form-select form-select-sm" id="selectCandidate" style="width:240px;" onchange="onCandidateChange()">
+                            <option value="">-- 选择候选人 --</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <div id="sessionBadge" class="d-none">
+                        <span class="badge bg-secondary me-1" id="roundBadge">第1轮</span>
+                        <span class="badge bg-info me-1" id="statusBadge">准备中</span>
+                    </div>
+                    <button id="btnGenerate" class="btn btn-outline-primary btn-sm d-none" onclick="generateQuestions()">
+                        <i class="bi bi-lightning-charge"></i> 生成问题
+                    </button>
+                    <button id="btnStartInterview" class="btn btn-primary btn-sm d-none" onclick="startInterview()">
+                        <i class="bi bi-play-circle"></i> 开始面试
+                    </button>
+                    <button id="btnPauseInterview" class="btn btn-warning btn-sm d-none" onclick="pauseInterview()">
+                        <i class="bi bi-pause-fill"></i> 暂停
+                    </button>
+                    <button id="btnResumeInterview" class="btn btn-success btn-sm d-none" onclick="resumeInterview()">
+                        <i class="bi bi-play-fill"></i> 继续
+                    </button>
+                    <button id="btnEndInterview" class="btn btn-danger btn-sm d-none" onclick="endInterview()">
+                        <i class="bi bi-stop-circle"></i> 结束面试
+                    </button>
+                </div>
+            </div>
+            <!-- 候选人详情（选中后显示） -->
+            <div id="candidateInfo" class="mt-2 d-none">
+                <small class="text-muted">
+                    <i class="bi bi-person"></i> <span id="infoCandidate">-</span> |
+                    <i class="bi bi-briefcase"></i> <span id="infoPosition">-</span> |
+                    <i class="bi bi-clipboard-check"></i> 已完成 <span id="infoRounds">0</span> 轮
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- 左侧：问题 + 实时对话 -->
+        <div class="col-md-8">
+            <!-- 面试问题面板 -->
+            <div class="card mb-3" id="questionsCard" style="display:none;">
+                <div class="card-header d-flex justify-content-between align-items-center py-2" 
+                     data-bs-toggle="collapse" data-bs-target="#questionsCollapse" style="cursor:pointer;">
+                    <h6 class="mb-0"><i class="bi bi-list-check me-1"></i>面试问题 <span class="badge bg-primary ms-1" id="questionsCount">0</span></h6>
+                    <i class="bi bi-chevron-down"></i>
+                </div>
+                <div class="collapse show" id="questionsCollapse">
+                    <div class="card-body py-2" id="questionsList" style="max-height:200px; overflow-y:auto;">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 实时对话 -->
+            <div class="card">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0"><i class="bi bi-chat-left-text me-1"></i>实时对话</h6>
+                    <div>
+                        <span class="small text-muted me-2" id="dialogCount">0 条对话</span>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="clearDialog()" title="清空对话">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body" style="height: 420px; overflow-y: auto;" id="dialogContainer">
+                    <div class="text-center text-muted py-5" id="dialogPlaceholder">
+                        <i class="bi bi-mic-mute" style="font-size: 3rem;"></i>
+                        <p class="mt-3">选择候选人并生成问题，然后点击"开始面试"</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧：控制面板 -->
+        <div class="col-md-4">
+            <!-- 角色切换 -->
+            <div class="card mb-3">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0"><i class="bi bi-people-fill me-1"></i>角色切换</h6>
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="autoModeSwitch" checked onchange="toggleAutoMode(this.checked)">
+                        <label class="form-check-label small" for="autoModeSwitch">自动</label>
+                    </div>
+                </div>
+                <div class="card-body py-2">
+                    <div class="btn-group w-100" role="group">
+                        <button id="btnRoleInterviewer" class="btn btn-outline-primary" onclick="manualSetRole('interviewer')">
+                            <i class="bi bi-person-badge"></i> 面试官
+                        </button>
+                        <button id="btnRoleCandidate" class="btn btn-outline-success" onclick="manualSetRole('candidate')">
+                            <i class="bi bi-person-check"></i> 候选人
+                        </button>
+                    </div>
+                    <div id="roleStatus" class="text-center small text-muted mt-2">未选择角色</div>
+                </div>
+            </div>
+            
+            <!-- 当前说话人 -->
+            <div class="card mb-3">
+                <div class="card-body text-center py-3">
+                    <div id="currentSpeaker" class="fw-bold text-muted" style="font-size:1.3rem;">等待中...</div>
+                </div>
+            </div>
+            
+            <!-- AI 实时分析 -->
+            <div class="card mb-3">
+                <div class="card-header py-2">
+                    <h6 class="mb-0"><i class="bi bi-robot me-1"></i>AI 实时分析 <span class="badge bg-secondary ms-1" id="analysisCount" style="display:none;">0</span></h6>
+                </div>
+                <div class="card-body py-2" id="aiAnalysis" style="max-height: 350px; overflow-y: auto;">
+                    <p class="text-muted small mb-0">等待候选人回答...</p>
+                </div>
+            </div>
+            
+            <!-- 建议追问 -->
+            <div class="card">
+                <div class="card-header py-2">
+                    <h6 class="mb-0"><i class="bi bi-chat-dots me-1"></i>建议追问</h6>
+                </div>
+                <div class="card-body py-2" id="suggestedQuestions">
+                    <p class="text-muted small mb-0">暂无建议</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script>
+// ========== 全局状态 ==========
+let socket = null;
+let audioContext = null, audioProcessor = null, audioStream = null;
+let isRecording = false;
+let asrSessionId = null;
+let dialogHistory = [];
+let currentRole = null;
+let lastCandidateText = '';
+let lastCandidateQuestion = '';
+let dialogSeq = 0;
+let interimRole = null;  // 当前interim消息的角色（创建时固定，不随切换变化）
+let lastInterimText = '';  // 当前interim中累积的文本
+
+let analysisHistory = [];  // AI分析历史记录
+let questionAskedSet = new Set();  // 已问过的问题索引
+let qCount = 0, aCount = 0;  // Q#/A# 计数器
+
+// ========== 说话人自动识别 ==========
+let speakerRoleMap = {};  // speaker ID → role 映射 (e.g. {'0': 'interviewer', '1': 'candidate'})
+let autoMode = true;  // true=自动识别角色, false=手动模式
+let lastDetectedSpeaker = null;  // 上次检测到的speaker ID
+
+// ========== 停顿预测换人（降低说话人切换显示延迟）==========
+// 讯飞引擎只在final结果(约2-3秒/句)里才报告说话人变化(rl)，
+// 导致新说话人的前2秒文字被归到旧说话人框里。
+// 解决：检测“上一句final结束后停顿超过阈值再出现新句子”→提前预测换人。
+let lastFinalEd = null;          // 上一个final结果的音频结束时间(ms)
+let pendingTurnPrediction = false; // 预测换人后等待引擎final确认的状态
+let pendingAnalysisOnConfirm = false; // 预判候选人→面试官后，延迟到引擎final确认才触发AI分析（避免预判失误时分析不完整答案）
+let predPreFinalize = false;   // 预判时是否执行了定稿（预判失误时需撤销）
+let predState = null;          // 预判前的状态快照（用于预判失误时撤销定稿、合并文本回同一个框）
+const TURN_PAUSE_MS = 1500;      // 停顿超过此阈值(ms)视为换人（同一人连说间隔约<1s，换人停顿约>2s）
+
+// AI 实时分析进行中状态（防止用户在分析未完成时点结束面试导致分析被吞）
+let aiAnalysisInFlight = false;
+let aiAnalysisCount = 0;  // 当前在飞的分析数（避免并发出错）
+
+// 面试数据
+let selectedCandidateId = null;
+let currentInterviewSession = null;
+let currentQuestions = [];
+let candidatesMap = {};
+let positionsMap = {};
+let positionsFull = {};           // 岗位原始对象数组（供下拉框使用）
+let positionToCandidates = {};    // positionId -> candidates[] 映射
+let candidateSessionCounts = {};  // candidateId → 已有session数（用于计算轮次）
+let allSessions = [];  // 所有面试会话（用于恢复进行中会话）
+let selectedPositionId = null;    // 当前筛选的岗位
+
+// ========== 初始化 ==========
+document.addEventListener('DOMContentLoaded', () => {
+    initSocket();
+    loadCandidates();
+});
+
+// ========== 加载候选人列表 ==========
+async function loadCandidates() {
+    try {
+        const [candRes, sessRes, posRes] = await Promise.all([
+            apiCall('/api/candidates'),
+            apiCall('/api/interviews/sessions'),
+            apiCall('/api/positions')
+        ]);
+
+        const candidates = candRes.data || [];
+        candidates.forEach(c => { candidatesMap[c.id] = c; });
+
+        // 岗位数据：同时存 id->name 映射、原始数组、按岗位分组的候选人映射
+        const positions = posRes.data || [];
+        positionsMap = {};
+        positionsFull = positions;
+        positions.forEach(p => { positionsMap[p.id] = p.name; });
+
+        // 构建 positionId -> 候选人[] 映射（用于二级联动）
+        positionToCandidates = {};
+        positions.forEach(p => { positionToCandidates[p.id] = []; });
+        candidates.forEach(c => {
+            const pid = c.position_id;
+            if (pid != null && !positionToCandidates[pid]) positionToCandidates[pid] = [];
+            if (pid != null) positionToCandidates[pid].push(c);
+        });
+
+        // 统计每个候选人已完成的面试轮次（只算 completed 或 in_progress，不算 preparing）
+        const sessions = sessRes.data || [];
+        allSessions = sessions;
+        candidateSessionCounts = {};
+        sessions.forEach(s => {
+            if (!candidateSessionCounts[s.candidate_id]) candidateSessionCounts[s.candidate_id] = 0;
+            if (s.status === 'completed' || s.status === 'in_progress') candidateSessionCounts[s.candidate_id]++;
+        });
+
+        // 填充岗位下拉框：只列出「实际有候选人的岗位」+「全部」选项
+        const posSelect = document.getElementById('selectPosition');
+        const posWithCandidates = positions
+            .filter(p => (positionToCandidates[p.id] || []).some(c => c.ai_analysis))
+            .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-CN'));
+        posSelect.innerHTML = '<option value="">-- 全部岗位 --</option>' +
+            posWithCandidates.map(p => `<option value="${p.id}">${p.name}（${(positionToCandidates[p.id] || []).length}人）</option>`).join('');
+
+        // 渲染候选人下拉框（默认全部岗位）
+        renderCandidateOptions();
+    } catch(e) {
+        console.error('加载候选人失败:', e);
+        showToast('加载候选人失败', 'danger');
+    }
+}
+
+// 渲染候选人下拉框选项。可选传入 positionId 过滤；不传则用全局 selectedPositionId
+function renderCandidateOptions(positionId) {
+    if (positionId !== undefined) selectedPositionId = positionId || null;
+    const list = (selectedPositionId == null)
+        ? Object.values(candidatesMap)
+        : (positionToCandidates[selectedPositionId] || []);
+    // 只显示有AI分析结果的候选人（已完成简历评估）
+    const available = list.filter(c => c.ai_analysis);
+    const select = document.getElementById('selectCandidate');
+    if (available.length === 0) {
+        select.innerHTML = '<option value="">-- 该岗位暂无候选人 --</option>';
+    } else {
+        select.innerHTML = '<option value="">-- 选择候选人 --</option>' +
+            available.map(c => {
+                const posName = positionsMap[c.position_id] || '';
+                const rounds = candidateSessionCounts[c.id] || 0;
+                const roundLabel = rounds > 0 ? ` (${rounds}轮)` : '';
+                return `<option value="${c.id}">${c.name} - ${posName}${roundLabel}</option>`;
+            }).join('');
+    }
+}
+
+// ========== 岗位筛选变更 ==========
+function onPositionChange() {
+    const pid = parseInt(document.getElementById('selectPosition').value) || null;
+    // 切换岗位时清空当前已选候选人（逻辑同 onCandidateChange 重置）
+    selectedCandidateId = null;
+    document.getElementById('selectCandidate').value = '';
+    renderCandidateOptions(pid);
+    // 重置所有面试状态
+    onCandidateChange();
+}
+
+// ========== 选择候选人 ==========
+function onCandidateChange() {
+    selectedCandidateId = parseInt(document.getElementById('selectCandidate').value) || null;
+    
+    // 停止任何正在进行的 ASR
+    if (isRecording) stopASR();
+    
+    // 清理旧状态（切换候选人时重置所有面试相关状态）
+    currentInterviewSession = null;
+    currentQuestions = [];
+    dialogHistory = [];
+    dialogSeq = 0;
+    interimRole = null;
+    lastCandidateText = '';
+    lastCandidateQuestion = '';
+    currentRole = null;
+    analysisHistory = [];
+    questionAskedSet = new Set();
+    qCount = 0; aCount = 0;
+    speakerRoleMap = {};  // 重置说话人映射
+    autoMode = true;  // 恢复自动模式
+    lastDetectedSpeaker = null;
+    
+    // 隐藏所有操作按钮
+    document.getElementById('btnPauseInterview').classList.add('d-none');
+    document.getElementById('btnResumeInterview').classList.add('d-none');
+    document.getElementById('btnEndInterview').classList.add('d-none');
+    document.getElementById('questionsCard').style.display = 'none';
+    
+    // 重置角色按钮
+    document.getElementById('btnRoleInterviewer').className = 'btn btn-outline-primary';
+    document.getElementById('btnRoleCandidate').className = 'btn btn-outline-success';
+    document.getElementById('roleStatus').textContent = '未选择角色';
+    document.getElementById('currentSpeaker').textContent = '等待中...';
+    document.getElementById('currentSpeaker').className = 'fw-bold text-muted';
+    
+    // 重置对话区域
+    document.getElementById('dialogContainer').innerHTML = `
+        <div class="text-center text-muted py-5" id="dialogPlaceholder">
+            <i class="bi bi-mic-mute" style="font-size: 3rem;"></i>
+            <p class="mt-3">选择候选人并生成问题，然后点击“开始面试”</p>
+        </div>`;
+    updateDialogCount();
+    
+    // 重置 AI 分析和建议追问
+    document.getElementById('aiAnalysis').innerHTML = '<p class="text-muted small mb-0">等待候选人回答...</p>';
+    document.getElementById('aiAnalysis').style.maxHeight = '';
+    document.getElementById('suggestedQuestions').innerHTML = '<p class="text-muted small mb-0">暂无建议</p>';
+    
+    if (!selectedCandidateId) {
+        document.getElementById('candidateInfo').classList.add('d-none');
+        document.getElementById('sessionBadge').classList.add('d-none');
+        document.getElementById('btnGenerate').classList.add('d-none');
+        document.getElementById('btnStartInterview').classList.add('d-none');
+        return;
+    }
+    
+    const cand = candidatesMap[selectedCandidateId];
+    const posName = positionsMap[cand.position_id] || '未知';
+    const existingRounds = candidateSessionCounts[selectedCandidateId] || 0;
+    const nextRound = existingRounds + 1;
+    
+    // 显示候选人信息
+    document.getElementById('candidateInfo').classList.remove('d-none');
+    document.getElementById('infoCandidate').textContent = cand.name;
+    document.getElementById('infoPosition').textContent = posName;
+    document.getElementById('infoRounds').textContent = existingRounds;
+    
+    // 显示轮次和状态
+    document.getElementById('sessionBadge').classList.remove('d-none');
+    document.getElementById('roundBadge').textContent = `第${nextRound}轮`;
+    document.getElementById('statusBadge').className = 'badge bg-secondary me-1';
+    document.getElementById('statusBadge').textContent = '待生成问题';
+    
+    // 显示"生成问题"按钮
+    document.getElementById('btnGenerate').classList.remove('d-none');
+    document.getElementById('btnGenerate').disabled = false;
+    document.getElementById('btnGenerate').innerHTML = '<i class="bi bi-lightning-charge"></i> 生成问题';
+    document.getElementById('btnStartInterview').classList.add('d-none');
+    
+    // 尝试恢复进行中的会话（刷新页面后不丢失对话）
+    restoreActiveSession(selectedCandidateId);
+}
+
+// ========== 恢复进行中会话 ==========
+async function restoreActiveSession(candidateId) {
+    // 优先查找 in_progress 或 preparing 会话
+    let targetSession = allSessions
+        .filter(s => s.candidate_id === candidateId && (s.status === 'in_progress' || s.status === 'preparing'))
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+    
+    // 如果没有活跃会话，查找最近的 completed 会话（只读查看）
+    if (!targetSession) {
+        targetSession = allSessions
+            .filter(s => s.candidate_id === candidateId && s.status === 'completed')
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+    }
+    
+    if (!targetSession) return;
+    
+    try {
+        const res = await apiCall(`/api/interviews/${targetSession.id}`);
+        const { session, dialogs } = res.data;
+        
+        // 恢复会话状态
+        currentInterviewSession = session;
+        
+        // 恢复问题列表
+        if (session.questions_plan) {
+            const questions = typeof session.questions_plan === 'string' ? JSON.parse(session.questions_plan) : session.questions_plan;
+            renderQuestions(questions);
+        }
+        
+        // 恢复对话记录
+        if (dialogs && dialogs.length > 0) {
+            document.getElementById('dialogContainer').innerHTML = '';
+            dialogs.forEach(d => {
+                if (d.question && d.question !== '(未指定问题)') {
+                    qCount++;
+                    addDialogMessage('面试官', d.question, 'interviewer');
+                }
+                if (d.answer) {
+                    aCount++;
+                    addDialogMessage('候选人', d.answer, 'candidate');
+                }
+                dialogHistory.push({ speaker: '候选人', text: d.answer, role: 'candidate', timestamp: new Date(d.created_at) });
+            });
+            updateDialogCount();
+        }
+        
+        // 更新UI状态
+        if (session.status === 'in_progress') {
+            document.getElementById('statusBadge').textContent = '进行中';
+            document.getElementById('statusBadge').className = 'badge bg-success me-1';
+            document.getElementById('btnGenerate').classList.add('d-none');
+            document.getElementById('btnStartInterview').classList.remove('d-none');
+        } else if (session.status === 'preparing') {
+            document.getElementById('statusBadge').textContent = '准备中';
+            document.getElementById('statusBadge').className = 'badge bg-info me-1';
+            document.getElementById('btnGenerate').classList.add('d-none');
+            document.getElementById('btnStartInterview').classList.remove('d-none');
+        } else if (session.status === 'completed') {
+            document.getElementById('statusBadge').textContent = '已完成（第' + allSessions.filter(s => s.candidate_id === candidateId && s.status === 'completed').length + '轮）';
+            document.getElementById('statusBadge').className = 'badge bg-secondary me-1';
+            document.getElementById('btnGenerate').classList.remove('d-none');
+            document.getElementById('btnGenerate').innerHTML = '<i class="bi bi-plus-circle"></i> 开始新一轮面试';
+            document.getElementById('btnStartInterview').classList.add('d-none');
+        }
+        
+        showToast('已恢复上次面试会话', 'info');
+    } catch(e) {
+        console.error('恢复会话失败:', e);
+    }
+}
+
+// ========== 生成面试问题（SSE） ==========
+function generateQuestions() {
+    if (!selectedCandidateId) return;
+    
+    // 清空上一轮的对话记录和状态
+    document.getElementById('dialogContainer').innerHTML = `<div class="text-center text-muted py-5" id="dialogPlaceholder"><i class="bi bi-mic-mute" style="font-size: 3rem;"></i><p class="mt-3">等待新一轮面试开始...</p></div>`;
+    dialogHistory = [];
+    dialogSeq = 0;
+    qCount = 0; aCount = 0;
+    analysisHistory = [];
+    questionAskedSet = new Set();
+    lastCandidateText = '';
+    lastCandidateQuestion = '';
+    speakerRoleMap = {};  // 重置说话人映射
+    autoMode = true;
+    lastDetectedSpeaker = null;
+    updateDialogCount();
+    
+    document.getElementById('btnGenerate').disabled = true;
+    document.getElementById('statusBadge').textContent = '生成中...';
+    document.getElementById('statusBadge').className = 'badge bg-warning me-1';
+    
+    consumeSSE(`/api/stream/questions/${selectedCandidateId}`, {
+        method: 'GET',
+        initialMsg: 'AI 正在生成面试问题...',
+        initialSub: '正在分析候选人简历与岗位要求，请稍候',
+        async onComplete(payload) {
+            // payload 包含 result（问题）和 session（新建的会话）
+            if (payload.session) {
+                currentInterviewSession = payload.session;
+                document.getElementById('btnGenerate').classList.add('d-none');
+                document.getElementById('statusBadge').textContent = '准备中';
+                document.getElementById('statusBadge').className = 'badge bg-info me-1';
+                
+                // 加载问题
+                renderQuestions(payload.result);
+                
+                // 显示"开始面试"按钮
+                document.getElementById('btnStartInterview').classList.remove('d-none');
+                
+                showToast('面试问题已生成', 'success');
+            }
+        },
+        onError(msg) {
+            document.getElementById('btnGenerate').disabled = false;
+            document.getElementById('statusBadge').textContent = '生成失败';
+            document.getElementById('statusBadge').className = 'badge bg-danger me-1';
+            showToast('问题生成失败: ' + msg, 'danger');
+        }
+    });
+}
+
+// ========== 渲染面试问题 ==========
+function renderQuestions(questionResult) {
+    currentQuestions = [];
+    if (!questionResult) {
+        document.getElementById('questionsCard').style.display = 'none';
+        return;
+    }
+    
+    currentQuestions = questionResult.questions || questionResult;
+    
+    // 排序
+    const categoryPriority = { '项目深挖': 0, '技能验证': 1, '短板探测': 2, '场景设计': 3 };
+    currentQuestions.sort((a, b) => {
+        const pa = categoryPriority[a.category] ?? 99;
+        const pb = categoryPriority[b.category] ?? 99;
+        if (pa !== pb) return pa - pb;
+        const diffOrder = { 'hard': 0, 'medium': 1, 'easy': 2 };
+        return (diffOrder[a.difficulty] ?? 9) - (diffOrder[b.difficulty] ?? 9);
+    });
+    
+    document.getElementById('questionsCard').style.display = '';
+    document.getElementById('questionsCount').textContent = `${currentQuestions.length}题 · 已问${questionAskedSet.size}`;
+    
+    const list = document.getElementById('questionsList');
+    list.innerHTML = currentQuestions.map((q, i) => {
+        const qText = q.question || q;
+        const diffBadge = q.difficulty === 'hard' ? 'danger' : q.difficulty === 'medium' ? 'warning' : 'info';
+        const isAsked = questionAskedSet.has(i);
+        const askedIcon = isAsked ? '<i class="bi bi-check-circle-fill text-success ms-auto" title="已问"></i>' : '';
+        const bgClass = isAsked ? 'bg-light bg-opacity-50' : 'bg-light';
+        // 回答方向关键词（兼容旧数据，无则不显示）
+        const directions = Array.isArray(q.answer_directions) && q.answer_directions.length
+            ? `<div class="mt-1 d-flex flex-wrap gap-1 ps-5">
+                 <span class="small text-muted me-1" style="font-size:0.7rem;">关键词：</span>
+                 ${q.answer_directions.map(d => `<span class="badge bg-light text-muted border" style="font-size:0.65rem;">${d}</span>`).join('')}
+               </div>`
+            : '';
+        return `
+        <div class="mb-1 p-2 ${bgClass} rounded" style="cursor:pointer;${isAsked ? 'opacity:0.7;' : ''}" onclick="pickQuestion(${i})" id="q_${i}">
+            <div class="d-flex align-items-start gap-2">
+                <span class="badge bg-primary flex-shrink-0" style="font-size:0.75rem;">Q${i+1}</span>
+                <span class="badge bg-${diffBadge} flex-shrink-0" style="font-size:0.65rem;">${q.difficulty || 'medium'}</span>
+                <span class="badge bg-secondary flex-shrink-0" style="font-size:0.65rem;">${q.category || ''}</span>
+                <span class="small flex-grow-1">${qText}</span>
+                ${askedIcon}
+            </div>
+            ${directions}
+        </div>`;
+    }).join('');
+}
+
+// ========== 开始面试 ==========
+function startInterview() {
+    if (!currentInterviewSession) {
+        showToast('请先生成问题', 'warning');
+        return;
+    }
+    
+    document.getElementById('btnStartInterview').classList.add('d-none');
+    document.getElementById('btnPauseInterview').classList.remove('d-none');
+    document.getElementById('btnEndInterview').classList.remove('d-none');
+    
+    document.getElementById('statusBadge').textContent = '进行中';
+    document.getElementById('statusBadge').className = 'badge bg-success me-1';
+    
+    // 自动选择面试官角色
+    setRole('interviewer');
+    
+    // 自动开始ASR
+    startASR();
+}
+
+// ========== 暂停面试 ==========
+function pauseInterview() {
+    stopASR();
+    document.getElementById('btnPauseInterview').classList.add('d-none');
+    document.getElementById('btnResumeInterview').classList.remove('d-none');
+    document.getElementById('statusBadge').textContent = '已暂停';
+    document.getElementById('statusBadge').className = 'badge bg-warning me-1';
+}
+
+// ========== 继续面试 ==========
+function resumeInterview() {
+    document.getElementById('btnResumeInterview').classList.add('d-none');
+    document.getElementById('btnPauseInterview').classList.remove('d-none');
+    document.getElementById('statusBadge').textContent = '进行中';
+    document.getElementById('statusBadge').className = 'badge bg-success me-1';
+    startASR();
+}
+
+// ========== 结束面试 ==========
+function endInterview() {
+    // 拦截：AI 实时分析未完成时阻止点结束面试，避免分析被吞
+    if (aiAnalysisCount > 0) {
+        showToast(`还有 ${aiAnalysisCount} 个 AI 实时分析未完成，请等待完成后重试`, 'warning');
+        return;
+    }
+    if (!confirm('确定结束本轮面试？将会生成面试评价报告。')) return;
+    
+    stopASR();
+    document.getElementById('btnPauseInterview').classList.add('d-none');
+    document.getElementById('btnResumeInterview').classList.add('d-none');
+    document.getElementById('btnEndInterview').classList.add('d-none');
+    document.getElementById('statusBadge').textContent = '生成报告中...';
+    document.getElementById('statusBadge').className = 'badge bg-warning me-1';
+    
+    if (!currentInterviewSession) {
+        // 无 session，仅重置 UI
+        document.getElementById('btnStartInterview').classList.remove('d-none');
+        document.getElementById('statusBadge').textContent = '已完成';
+        document.getElementById('statusBadge').className = 'badge bg-secondary me-1';
+        showToast('本轮面试已结束', 'success');
+        return;
+    }
+    
+    // 调用 SSE 生成评价报告
+    const sessionId = currentInterviewSession.id;
+    consumeSSE(`/api/stream/report/${sessionId}`, {
+        method: 'POST',
+        initialMsg: 'AI 正在生成面试评价报告...',
+        initialSub: '正在综合分析所有对话记录，请耐心等待',
+        async onComplete(payload) {
+            document.getElementById('btnStartInterview').classList.remove('d-none');
+            document.getElementById('statusBadge').textContent = '已完成';
+            document.getElementById('statusBadge').className = 'badge bg-secondary me-1';
+            
+            if (payload.result) {
+                // 显示报告摘要（追加到分析历史）
+                const report = payload.result;
+                let reportHtml = '<div class="mb-2 p-2 border border-primary rounded" style="background-color: #e8f0fe;">';
+                reportHtml += '<div class="mb-1"><strong>📝 面试评价报告已生成</strong></div>';
+                if (report.overall_score) {
+                    // overall_score 是 0-100 分制，转换为 10 分制显示
+                    const score10 = Math.min(10, Math.max(1, Math.round(report.overall_score / 10)));
+                    reportHtml += `<div class="mb-1">综合评分: <span class="badge bg-primary">${score10}/10</span> <small class="text-muted">(${report.overall_score}/100)</small></div>`;
+                }
+                if (report.summary) {
+                    reportHtml += `<p class="small mb-0">${report.summary.substring(0, 200)}${report.summary.length > 200 ? '...' : ''}</p>`;
+                }
+                reportHtml += '</div>';
+                const analysisDiv = document.getElementById('aiAnalysis');
+                analysisDiv.insertAdjacentHTML('afterbegin', reportHtml);
+                showToast('面试评价报告已生成', 'success');
+            } else {
+                showToast('本轮面试已结束', 'success');
+            }
+            
+            // 刷新候选人信息（轮次+1）
+            await loadCandidates();
+            // 更新当前候选人的轮次显示
+            if (selectedCandidateId) {
+                const updatedRounds = candidateSessionCounts[selectedCandidateId] || 0;
+                document.getElementById('infoRounds').textContent = updatedRounds;
+                document.getElementById('roundBadge').textContent = `第${updatedRounds + 1}轮`;
+            }
+        },
+        onError(msg) {
+            document.getElementById('btnStartInterview').classList.remove('d-none');
+            document.getElementById('statusBadge').textContent = '报告生成失败';
+            document.getElementById('statusBadge').className = 'badge bg-danger me-1';
+            showToast('报告生成失败: ' + msg, 'danger');
+        }
+    });
+}
+
+// 点击问题
+function pickQuestion(idx) {
+    const q = currentQuestions[idx];
+    const qText = q.question || q;
+    lastCandidateQuestion = qText;
+    
+    // 高亮当前选择
+    document.querySelectorAll('#questionsList > div').forEach((el, i) => {
+        const isAsked = questionAskedSet.has(i);
+        const isSelected = i === idx;
+        if (isSelected) {
+            el.className = 'mb-1 p-2 bg-primary bg-opacity-10 border border-primary rounded d-flex align-items-start gap-2';
+            el.style.cursor = 'pointer';
+            el.style.opacity = '';
+        } else {
+            el.className = `mb-1 p-2 ${isAsked ? 'bg-light bg-opacity-50' : 'bg-light'} rounded d-flex align-items-start gap-2`;
+            el.style.cursor = 'pointer';
+            el.style.opacity = isAsked ? '0.7' : '';
+        }
+    });
+    
+    showToast(`已选择 Q${idx+1}`, 'info');
+}
+
+// ========== 角色切换 ==========
+function setRole(role, isAuto = false) {
+    // 角色切换时，将当前interim定稿为独立对话盒子
+    if (interimRole && lastInterimText.trim()) {
+        finalizeInterimAsDialog();
+    }
+    
+    // 如果从候选人切换到面试官，触发 AI 分析
+    if (currentRole === 'candidate' && role === 'interviewer' && lastCandidateText) {
+        triggerAIAnalysis(lastCandidateText, lastCandidateQuestion);
+        lastCandidateText = '';
+        lastCandidateQuestion = '';
+    }
+    
+    // 清除interim状态，确保新角色立即生效
+    interimRole = null;
+    lastInterimText = '';
+    const interimDiv = document.getElementById('interim-result');
+    if (interimDiv) interimDiv.remove();
+    
+    currentRole = role;
+    const roleName = role === 'interviewer' ? '面试官' : '候选人';
+    const roleClass = role === 'interviewer' ? 'text-primary' : 'text-success';
+    
+    document.getElementById('roleStatus').innerHTML = `当前：<strong class="${roleClass}">${roleName}</strong>${autoMode ? ' <span class="badge bg-info">自动</span>' : ' <span class="badge bg-warning">手动</span>'}`;
+    document.getElementById('btnRoleInterviewer').className = role === 'interviewer' ? 'btn btn-primary' : 'btn btn-outline-primary';
+    document.getElementById('btnRoleCandidate').className = role === 'candidate' ? 'btn btn-success' : 'btn btn-outline-success';
+    document.getElementById('currentSpeaker').textContent = roleName;
+    document.getElementById('currentSpeaker').className = `fw-bold ${roleClass}`;
+}
+
+// 手动点击角色按钮 = 校准当前speaker的映射
+function manualSetRole(role) {
+    // 如果当前有检测到的speaker，更新映射（校准）
+    if (lastDetectedSpeaker !== null) {
+        speakerRoleMap[lastDetectedSpeaker] = role;
+        console.log(`[校准] speaker_${lastDetectedSpeaker} → ${role}`);
+        showToast(`已校准: 当前说话人 → ${role === 'interviewer' ? '面试官' : '候选人'}`, 'success');
+    }
+    autoMode = true;  // 校准后仍保持自动模式
+    document.getElementById('autoModeSwitch').checked = true;
+    setRole(role);
+}
+
+// 切换自动/手动模式
+function toggleAutoMode(enabled) {
+    autoMode = enabled;
+    if (enabled) {
+        showToast('已开启自动角色识别', 'info');
+    } else {
+        showToast('已切换为手动模式，请点击按钮切换角色', 'warning');
+    }
+    // 更新状态显示
+    if (currentRole) {
+        const roleName = currentRole === 'interviewer' ? '面试官' : '候选人';
+        const roleClass = currentRole === 'interviewer' ? 'text-primary' : 'text-success';
+        document.getElementById('roleStatus').innerHTML = `当前：<strong class="${roleClass}">${roleName}</strong> ${autoMode ? '<span class="badge bg-info">自动</span>' : '<span class="badge bg-warning">手动</span>'}`;
+    }
+}
+
+// ========== WebSocket ==========
+function initSocket() {
+    socket = io();
+    socket.on('connect', () => { console.log('WebSocket 已连接'); });
+    socket.on('asr_result', (data) => { handleASRResult(data); });
+    socket.on('speaker_change', (data) => { handleSpeakerChange(data.speaker); });
+}
+
+// 说话人切换回调（自动角色识别核心）
+function handleSpeakerChange(speaker) {
+    console.log('[Auto] Speaker changed:', speaker);
+    if (!autoMode) return;  // 手动模式不自动切换
+    
+    // 如果这个speaker还没有映射，自动分配角色
+    if (!speakerRoleMap[speaker]) {
+        const assignedRoles = Object.values(speakerRoleMap);
+        if (!assignedRoles.includes('interviewer')) {
+            speakerRoleMap[speaker] = 'interviewer';  // 第一个说话的人默认是面试官
+        } else if (!assignedRoles.includes('candidate')) {
+            speakerRoleMap[speaker] = 'candidate';
+        } else {
+            speakerRoleMap[speaker] = 'candidate';  // 多余的人默认候选人
+        }
+        console.log(`[Auto] 分配角色: speaker_${speaker} → ${speakerRoleMap[speaker]}`);
+        showToast(`自动识别: 说话人${speaker} → ${speakerRoleMap[speaker] === 'interviewer' ? '面试官' : '候选人'}`, 'info');
+    }
+    
+    // 自动切换角色
+    const newRole = speakerRoleMap[speaker];
+    if (newRole && newRole !== currentRole) {
+        setRole(newRole, true);  // true = 自动触发
+    }
+    lastDetectedSpeaker = speaker;
+}
+
+// ========== ASR 控制 ==========
+async function startASR() {
+    if (!currentInterviewSession) {
+        showToast('请先生成面试问题', 'warning');
+        return;
+    }
+    
+    cleanupAudio();
+    
+    try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } 
+        });
+        
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(audioStream);
+        audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+        source.connect(audioProcessor);
+        audioProcessor.connect(audioContext.destination);
+        
+        asrSessionId = 'live_' + Date.now();
+        socket.emit('join', asrSessionId);
+        
+        const res = await fetch('/api/asr/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: asrSessionId })
+        });
+        
+        if (res.ok) {
+            isRecording = true;
+            
+            const placeholder = document.getElementById('dialogPlaceholder');
+            if (placeholder) placeholder.style.display = 'none';
+            
+            document.getElementById('currentSpeaker').textContent = '识别中...';
+            document.getElementById('currentSpeaker').className = 'fw-bold text-info';
+            
+            audioProcessor.onaudioprocess = (e) => {
+                if (!isRecording) return;
+                const pcmData = floatTo16BitPCM(e.inputBuffer.getChannelData(0));
+                sendAudioChunk(pcmData, asrSessionId);
+            };
+            
+            showToast('语音识别已启动', 'success');
+        } else {
+            cleanupAudio();
+            showToast('启动失败', 'danger');
+        }
+    } catch (err) {
+        cleanupAudio();
+        showToast('无法访问麦克风: ' + err.message, 'danger');
+    }
+}
+
+function cleanupAudio() {
+    isRecording = false;
+    if (audioProcessor) { audioProcessor.onaudioprocess = null; audioProcessor.disconnect(); audioProcessor = null; }
+    if (audioStream) { audioStream.getTracks().forEach(t => t.stop()); audioStream = null; }
+    if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
+}
+
+async function stopASR() {
+    cleanupAudio();
+    if (asrSessionId) {
+        try { await fetch('/api/asr/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: asrSessionId }) }); } catch(e) {}
+        asrSessionId = null;
+    }
+    document.getElementById('currentSpeaker').textContent = '已停止';
+    document.getElementById('currentSpeaker').className = 'fw-bold text-muted';
+}
+
+window.addEventListener('beforeunload', () => {
+    if (isRecording) { cleanupAudio(); if (asrSessionId) { navigator.sendBeacon('/api/asr/stop', new Blob([JSON.stringify({ session_id: asrSessionId })], { type: 'application/json' })); } }
+});
+
+// ========== 识别结果处理 ==========
+// 讯飞模式：每小段发is_final，但不应每段建一个盒子
+// 核心逻辑：同一说话人持续累积到interim框，只在角色切换时定稿建框
+
+// 更新角色UI（当前说话人指示、按钮高亮）
+function updateRoleUI(role) {
+    const roleName = role === 'interviewer' ? '面试官' : '候选人';
+    const roleClass = role === 'interviewer' ? 'text-primary' : 'text-success';
+    document.getElementById('roleStatus').innerHTML = `当前：<strong class="${roleClass}">${roleName}</strong> <span class="badge bg-info">自动</span>`;
+    document.getElementById('btnRoleInterviewer').className = role === 'interviewer' ? 'btn btn-primary' : 'btn btn-outline-primary';
+    document.getElementById('btnRoleCandidate').className = role === 'candidate' ? 'btn btn-success' : 'btn btn-outline-success';
+}
+
+function handleASRResult(data) {
+    const { text, speaker, is_final, bg, ed } = data;
+    if (!text.trim()) return;
+    console.log(`[ASR] ${is_final ? 'FINAL' : 'interim'} spk=${speaker} bg=${bg} ed=${ed} text="${text}"`);
+    
+    // ===== 停顿预测换人：final后停顿超过阈值再出现新句子 → 提前切换到另一角色 =====
+    // （不等引擎的rl报告，消除新说话人前2秒文字被归到旧说话人框的延迟）
+    if (autoMode && !is_final && bg !== undefined && bg !== null && lastFinalEd !== null && !pendingTurnPrediction) {
+        const gap = parseInt(bg) - lastFinalEd;
+        if (gap > TURN_PAUSE_MS && interimRole && lastInterimText.trim()) {
+            console.log(`[Predict] 检测到${gap}ms停顿(>${TURN_PAUSE_MS}ms)，预测换人`);
+            // 定稿当前说话人的文本
+            const prevRole = currentRole;
+            // 保存定稿前状态：若引擎final判定还是同一人（预判失误），撤销此定稿并合并回同一个框
+            predPreFinalize = true;
+            predState = {
+                interimRole: interimRole,
+                text: lastInterimText,
+                candidateText: lastCandidateText,
+                candidateQuestion: lastCandidateQuestion,
+                qCount: qCount,
+                aCount: aCount
+            };
+            finalizeInterimAsDialog();
+            // 预测切换到另一角色
+            const otherRole = prevRole === 'interviewer' ? 'candidate' : 'interviewer';
+            currentRole = otherRole;
+            interimRole = null;
+            lastInterimText = '';
+            pendingTurnPrediction = true;
+            const interimDiv = document.getElementById('interim-result');
+            if (interimDiv) interimDiv.remove();
+            updateRoleUI(otherRole);
+            // 候选人说完→面试官：延迟到引擎final确认后再触发AI分析（避免预判失误时分析不完整答案）
+            if (prevRole === 'candidate' && otherRole === 'interviewer' && lastCandidateText) {
+                pendingAnalysisOnConfirm = true;
+            }
+        }
+    }
+    // 记录final结果的音频结束时间（供下一句停顿检测用）
+    if (is_final && ed !== undefined && ed !== null) {
+        lastFinalEd = parseInt(ed);
+    }
+    
+    // ===== 自动角色检测：根据 speaker 字段确定当前角色 =====
+    let activeRole = currentRole || 'interviewer';
+    if (autoMode && speaker && speaker !== '-1') {
+        // 自动分配角色（如果还没映射）
+        if (!speakerRoleMap[speaker]) {
+            const assignedRoles = Object.values(speakerRoleMap);
+            if (!assignedRoles.includes('interviewer')) {
+                speakerRoleMap[speaker] = 'interviewer';
+            } else {
+                speakerRoleMap[speaker] = 'candidate';
+            }
+            console.log(`[Auto] 分配角色: speaker_${speaker} → ${speakerRoleMap[speaker]}`);
+            showToast(`自动识别: 说话人${speaker} → ${speakerRoleMap[speaker] === 'interviewer' ? '面试官' : '候选人'}`, 'info');
+        }
+        const detectedRole = speakerRoleMap[speaker];
+        if (detectedRole && detectedRole !== currentRole) {
+            // 预测换人等待确认期间，interim仍携带旧说话人ID，忽略以免回滚预测
+            if (pendingTurnPrediction && !is_final) {
+                // 保持预测角色，不回滚
+            } else {
+                if (pendingTurnPrediction && is_final) {
+                    // ===== 引擎final与预判矛盾：还是原来的人在说（预判失误）=====
+                    // 撤销预判时的定稿（移除已建的框），把文本合并回interim，
+                    // 让这个人的话最终显示在同一个框里（避免一句话被拆成多个框）
+                    if (predPreFinalize && predState) {
+                        // 先移除interim预览框，此时容器末尾才是预判时建的定稿框
+                        const interimDiv2 = document.getElementById('interim-result');
+                        if (interimDiv2) interimDiv2.remove();
+                        const container = document.getElementById('dialogContainer');
+                        if (container && container.lastElementChild) container.lastElementChild.remove();
+                        dialogHistory.pop();
+                        updateDialogCount();
+                        lastInterimText = predState.text + lastInterimText;
+                        interimRole = predState.interimRole;
+                        lastCandidateText = predState.candidateText;
+                        lastCandidateQuestion = predState.candidateQuestion;
+                        qCount = predState.qCount;
+                        aCount = predState.aCount;
+                        console.log(`[Predict] 预判失误，撤销：仍是${detectedRole === 'interviewer' ? '面试官' : '候选人'}在说，合并回同一个框`);
+                    }
+                    predPreFinalize = false;
+                    predState = null;
+                    currentRole = detectedRole;
+                    interimRole = interimRole || detectedRole;
+                    updateRoleUI(detectedRole);
+                    pendingTurnPrediction = false;
+                    pendingAnalysisOnConfirm = false;  // 预判失误，不触发AI分析
+                } else {
+                    // 角色变了（final确认或正常切换）→ 定稿前一个人的话，切换到新角色
+                    if (interimRole && lastInterimText.trim()) {
+                        finalizeInterimAsDialog();
+                    }
+                    if (currentRole === 'candidate' && detectedRole === 'interviewer' && lastCandidateText) {
+                        triggerAIAnalysis(lastCandidateText, lastCandidateQuestion);
+                        lastCandidateText = '';
+                        lastCandidateQuestion = '';
+                    }
+                    currentRole = detectedRole;
+                    interimRole = null;
+                    lastInterimText = '';
+                    const interimDiv = document.getElementById('interim-result');
+                    if (interimDiv) interimDiv.remove();
+                    updateRoleUI(detectedRole);
+                    pendingTurnPrediction = false;  // 引擎确认，清除预测状态
+                    predPreFinalize = false;
+                    predState = null;
+                    if (detectedRole === 'candidate') {
+                        pendingAnalysisOnConfirm = false;  // 预判失误（还是候选人），取消延迟的AI分析
+                    }
+                }
+            }
+        } else if (is_final) {
+            // 同一角色的final到达，清除预测状态
+            pendingTurnPrediction = false;
+            predPreFinalize = false;
+            predState = null;
+        }
+        // 预测等待期间的interim保持预测角色，其余用引擎检测的角色
+        activeRole = (pendingTurnPrediction && !is_final) ? currentRole : (detectedRole || activeRole);
+        lastDetectedSpeaker = speaker;
+    }
+    
+    // ===== 延迟触发的AI分析：预判候选人→面试官后，由引擎final确认才真正触发 =====
+    if (pendingAnalysisOnConfirm && is_final && currentRole === 'interviewer') {
+        if (lastCandidateText) {
+            triggerAIAnalysis(lastCandidateText, lastCandidateQuestion);
+        }
+        lastCandidateText = '';
+        lastCandidateQuestion = '';
+        pendingAnalysisOnConfirm = false;
+    }
+    
+    // ===== 核心显示逻辑：同一人说话期间累积到interim框 =====
+    const speakerName = activeRole === 'interviewer' ? '面试官' : '候选人';
+    document.getElementById('currentSpeaker').textContent = speakerName;
+    document.getElementById('currentSpeaker').className = `fw-bold ${activeRole === 'interviewer' ? 'text-primary' : 'text-success'}`;
+    
+    // 累积文本到当前interim
+    if (!interimRole) interimRole = activeRole;
+    
+    // 讯飞每段返回独立文本，需要拼接而非替换
+    if (is_final) {
+        // 一段话结束，追加到累积文本
+        lastInterimText += text;
+    } else {
+        // interim结果：替换当前未定稿部分
+        // 讯飞的interim是当前句子的实时预览，final时会发完整句子
+        // 所以interim时显示：已定稿文本 + 当前interim预览
+        const previewText = lastInterimText + text;
+        updateInterimResult(speakerName, previewText, interimRole);
+        // 记录候选人文字（用于AI分析）
+        if (activeRole === 'candidate') lastCandidateText = previewText;
+        return;  // interim不触发定稿
+    }
+    
+    // is_final=true: 更新interim框显示（但不建独立盒子）
+    updateInterimResult(speakerName, lastInterimText, interimRole);
+    
+    // 记录候选人/面试官文字
+    if (activeRole === 'candidate') lastCandidateText = lastInterimText;
+    if (activeRole === 'interviewer') {
+        lastCandidateQuestion = lastInterimText;
+        currentQuestions.forEach((q, i) => {
+            const qText = (q.question || q).substring(0, 15);
+            if (lastInterimText.includes(qText) || qText.includes(lastInterimText.substring(0, 15))) {
+                questionAskedSet.add(i);
+            }
+        });
+        if (questionAskedSet.size > 0) renderQuestions(currentQuestions);
+    }
+}
+
+// 将当前interim内容定稿为独立对话盒子
+function finalizeInterimAsDialog() {
+    if (!lastInterimText.trim() || !interimRole) return;
+    const speakerName = interimRole === 'interviewer' ? '面试官' : '候选人';
+    const interimDiv = document.getElementById('interim-result');
+    if (interimDiv) interimDiv.remove();
+    addDialogMessage(speakerName, lastInterimText, interimRole);
+    dialogHistory.push({ speaker: speakerName, text: lastInterimText, role: interimRole, timestamp: new Date() });
+    updateDialogCount();
+    if (interimRole === 'candidate') {
+        lastCandidateText = lastInterimText;
+    }
+    if (interimRole === 'interviewer') {
+        lastCandidateQuestion = lastInterimText;
+    }
+    interimRole = null;
+    lastInterimText = '';
+}
+
+// ========== 对话UI（微信风格聊天气泡） ==========
+function addDialogMessage(speaker, text, role) {
+    const container = document.getElementById('dialogContainer');
+    const interim = document.getElementById('interim-result');
+    if (interim) interim.remove();
+    
+    dialogSeq++;
+    
+    // Q#/A# 计数
+    let seqLabel = '';
+    if (role === 'interviewer') {
+        qCount++;
+        seqLabel = `<span class="badge bg-primary me-1" style="font-size:0.65rem;">Q${qCount}</span>`;
+    } else {
+        aCount++;
+        seqLabel = `<span class="badge bg-success me-1" style="font-size:0.65rem;">A${aCount}</span>`;
+    }
+    
+    const msgDiv = document.createElement('div');
+    
+    if (role === 'interviewer') {
+        // 面试官：蓝色边框 + 浅蓝背景独立容器
+        msgDiv.className = 'mb-3';
+        msgDiv.innerHTML = `
+            <div class="p-3 rounded-3" style="border: 2px solid #0d6efd; background-color: #e7f1ff;">
+                <div class="small text-primary fw-bold mb-2">${seqLabel}<i class="bi bi-person-badge me-1"></i>面试官</div>
+                <div style="word-wrap: break-word; color: #333;">${text}</div>
+                <div class="small text-muted mt-2">${new Date().toLocaleTimeString()}</div>
+            </div>`;
+    } else {
+        // 候选人：绿色边框 + 浅绿背景独立容器
+        msgDiv.className = 'mb-3';
+        msgDiv.innerHTML = `
+            <div class="p-3 rounded-3" style="border: 2px solid #198754; background-color: #e8f5e9;">
+                <div class="small text-success fw-bold mb-2">${seqLabel}<i class="bi bi-person-check me-1"></i>候选人</div>
+                <div style="word-wrap: break-word; color: #333;">${text}</div>
+                <div class="small text-muted mt-2">${new Date().toLocaleTimeString()}</div>
+            </div>`;
+    }
+    
+    container.appendChild(msgDiv);
+    container.scrollTop = container.scrollHeight;
+}
+
+function updateInterimResult(speaker, text, role) {
+    let interimDiv = document.getElementById('interim-result');
+    if (!interimDiv) {
+        interimDiv = document.createElement('div');
+        interimDiv.id = 'interim-result';
+        interimDiv.className = 'mb-3';
+        document.getElementById('dialogContainer').appendChild(interimDiv);
+    }
+    const icon = role === 'interviewer' ? 'bi-person-badge' : 'bi-person-check';
+    const borderColor = role === 'interviewer' ? '#0d6efd' : '#198754';
+    const bgColor = role === 'interviewer' ? '#e7f1ff' : '#e8f5e9';
+    const textColor = role === 'interviewer' ? 'text-primary' : 'text-success';
+    interimDiv.innerHTML = `
+        <div class="p-3 rounded-3" style="border: 2px dashed ${borderColor}; background-color: ${bgColor};">
+            <div class="small ${textColor} fw-bold mb-2"><i class="bi ${icon} me-1"></i>${speaker} <small class="text-muted">(识别中...)</small></div>
+            <div style="word-wrap: break-word; color: #333;">${text}</div>
+        </div>`;
+    document.getElementById('dialogContainer').scrollTop = document.getElementById('dialogContainer').scrollHeight;
+}
+
+function handleSpeakerChange(speaker) {
+    const name = speaker === '0' ? '面试官' : '候选人';
+    document.getElementById('currentSpeaker').textContent = name;
+    document.getElementById('currentSpeaker').className = `fw-bold ${speaker === '0' ? 'text-primary' : 'text-success'}`;
+    const interim = document.getElementById('interim-result');
+    if (interim) interim.remove();
+}
+
+function updateDialogCount() {
+    document.getElementById('dialogCount').textContent = `${dialogHistory.length} 条对话`;
+}
+
+function clearDialog() {
+    if (isRecording) { showToast('请先停止识别', 'warning'); return; }
+    document.getElementById('dialogContainer').innerHTML = `<div class="text-center text-muted py-5" id="dialogPlaceholder"><i class="bi bi-mic-mute" style="font-size: 3rem;"></i><p class="mt-3">对话已清空</p></div>`;
+    dialogHistory = [];
+    dialogSeq = 0;
+    updateDialogCount();
+}
+
+// ========== AI 分析 ==========
+async function triggerAIAnalysis(answer, question) {
+    if (!currentInterviewSession) return;
+
+    // 标记进入“AI 分析中”状态（阻止用户点结束面试）
+    aiAnalysisCount++;
+    refreshEndInterviewButton();
+
+    const div = document.getElementById('aiAnalysis');
+    // 显示加载状态（不影响已有历史）
+    const loadingId = 'analysis-loading-' + Date.now();
+    const loadingHtml = `<div id="${loadingId}" class="mb-2 p-2 border rounded bg-light">
+        <div class="d-flex align-items-center gap-2"><div class="spinner-border spinner-border-sm text-primary"></div><small>AI 分析中...</small></div>
+    </div>`;
+    div.insertAdjacentHTML('afterbegin', loadingHtml);
+
+    try {
+        const res = await apiCall('/api/interviews/dialog/evaluate', 'POST', {
+            answer, question: question || '', session_id: currentInterviewSession.id, context: dialogHistory.slice(-5)
+        });
+
+        // 移除加载状态
+        const loadingEl = document.getElementById(loadingId);
+        if (loadingEl) loadingEl.remove();
+
+        if (res.code === 200) {
+            const fb = res.data.feedback || res.data;
+            const analysisIdx = analysisHistory.length + 1;
+            analysisHistory.push({ question, answer, feedback: fb, time: new Date() });
+            
+            // 更新计数徽章
+            const countBadge = document.getElementById('analysisCount');
+            countBadge.textContent = analysisHistory.length;
+            countBadge.style.display = '';
+            
+            const sc = fb.score >= 7 ? 'success' : fb.score >= 4 ? 'warning' : 'danger';
+            const qc = fb.answer_quality === '优秀' ? 'success' : fb.answer_quality === '良好' ? 'primary' : fb.answer_quality === '一般' ? 'warning' : 'danger';
+            
+            let html = `<div class="mb-2 p-2 border rounded" style="background-color: #f8f9fa;">`;
+            html += `<div class="d-flex justify-content-between align-items-center mb-1">
+                <small class="fw-bold text-muted">#${analysisIdx}</small>
+                <small class="text-muted">${new Date().toLocaleTimeString()}</small>
+            </div>`;
+            html += `<div class="mb-1"><span class="badge bg-${sc}">评分: ${fb.score||'-'}/10</span>`;
+            if (fb.answer_quality) html += `<span class="badge bg-${qc} ms-1">${fb.answer_quality}</span>`;
+            html += '</div>';
+            if (fb.evaluation) html += `<p class="small mb-1">${fb.evaluation}</p>`;
+            if (fb.score_breakdown) {
+                html += '<div class="d-flex flex-wrap gap-1 mt-1">';
+                Object.entries(fb.score_breakdown).forEach(([k,v]) => html += `<span class="badge bg-light text-dark border" style="font-size:0.7rem;">${k}: ${v}</span>`);
+                html += '</div>';
+            }
+            if (fb.strengths) html += `<p class="small mt-1 mb-0 text-success"><i class="bi bi-check-circle"></i> ${fb.strengths}</p>`;
+            if (fb.weaknesses) html += `<p class="small mt-1 mb-0 text-warning"><i class="bi bi-exclamation-circle"></i> ${fb.weaknesses}</p>`;
+            if (fb.suggestion) html += `<p class="small mt-1 mb-0 text-info"><i class="bi bi-lightbulb"></i> ${fb.suggestion}</p>`;
+            html += '</div>';
+            
+            // 插入到最前面（最新的在上面）
+            div.insertAdjacentHTML('afterbegin', html);
+            
+            if (fb.follow_up_questions && fb.follow_up_questions.length) {
+                document.getElementById('suggestedQuestions').innerHTML = fb.follow_up_questions.map(q => 
+                    `<div class="mb-1 p-2 bg-light rounded small" style="cursor:pointer;" onclick="pickFollowUp(this)" data-q="${q.replace(/"/g,'&quot;')}"><i class="bi bi-arrow-return-right me-1 text-muted"></i>${q}</div>`
+                ).join('');
+            }
+        } else {
+            const errHtml = `<div class="mb-2 p-2 border rounded bg-light"><p class="text-danger small mb-0">${res.message || '分析失败'}</p></div>`;
+            div.insertAdjacentHTML('afterbegin', errHtml);
+        }
+    } catch (err) {
+        const loadingEl = document.getElementById(loadingId);
+        if (loadingEl) loadingEl.remove();
+        console.error('AI分析失败:', err);
+        const errHtml = `<div class="mb-2 p-2 border rounded bg-light"><p class="text-danger small mb-0">分析请求失败</p></div>`;
+        div.insertAdjacentHTML('afterbegin', errHtml);
+    } finally {
+        // 无论成功失败都释放计数，允许用户点结束面试
+        aiAnalysisCount = Math.max(0, aiAnalysisCount - 1);
+        refreshEndInterviewButton();
+    }
+}
+
+// 刷新结束面试按钮状态（AI分析中变灰+提示）
+function refreshEndInterviewButton() {
+    const btn = document.getElementById('btnEndInterview');
+    if (!btn) return;
+    const busy = aiAnalysisCount > 0;
+    btn.disabled = busy;
+    if (busy) {
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>结束面试（AI分析中 ${aiAnalysisCount}）`;
+        btn.title = `还有 ${aiAnalysisCount} 个 AI 实时分析未完成，请稍候`;
+    } else {
+        btn.innerHTML = `<i class="bi bi-stop-circle"></i> 结束面试`;
+        btn.title = '';
+    }
+}
+
+function pickFollowUp(el) { lastCandidateQuestion = el.dataset.q; showToast('已选择追问问题', 'info'); }
+
+// ========== 音频工具 ==========
+function floatTo16BitPCM(input) {
+    const output = new ArrayBuffer(input.length * 2);
+    const view = new DataView(output);
+    for (let i = 0; i < input.length; i++) {
+        const s = Math.max(-1, Math.min(1, input[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return output;
+}
+
+function sendAudioChunk(pcmData, sessionId) {
+    fetch('/api/asr/audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, audio: arrayBufferToBase64(pcmData) })
+    }).catch(() => {});
+}
+
+function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+}
+</script>
+{% endblock %}

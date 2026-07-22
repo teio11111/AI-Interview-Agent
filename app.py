@@ -1,5 +1,6 @@
 from flask import Flask, redirect, url_for
-from extensions import db
+from extensions import db, socketio
+from utils.logger import logger
 
 
 def create_app():
@@ -12,6 +13,9 @@ def create_app():
 
     # 初始化数据库
     db.init_app(app)
+    
+    # 初始化 SocketIO
+    socketio.init_app(app)
 
     # 注册路由蓝图
     from routes.position_routes import position_bp
@@ -20,6 +24,7 @@ def create_app():
     from routes.auth_routes import auth_bp
     from routes.candidate_portal_routes import candidate_portal_bp
     from routes.stream_routes import stream_bp
+    from routes.asr_routes import asr_bp
     app.register_blueprint(auth_bp)
     app.register_blueprint(home_bp)
     app.register_blueprint(position_bp)
@@ -27,6 +32,7 @@ def create_app():
     app.register_blueprint(interview_bp)
     app.register_blueprint(candidate_portal_bp)
     app.register_blueprint(stream_bp)
+    app.register_blueprint(asr_bp)
 
     # 导入所有模型并创建表
     with app.app_context():
@@ -51,4 +57,17 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
-    app.run(host='0.0.0.0', port=8088, debug=True, threaded=True)
+    
+    # SocketIO 事件处理
+    from flask_socketio import join_room, leave_room
+    
+    @socketio.on('join')
+    def handle_join(room):
+        join_room(room)
+        logger.info(f'[SocketIO] 客户端加入房间: {room}')
+    
+    @socketio.on('leave')
+    def handle_leave(room):
+        leave_room(room)
+    
+    socketio.run(app, host='0.0.0.0', port=8088, debug=True, allow_unsafe_werkzeug=True)

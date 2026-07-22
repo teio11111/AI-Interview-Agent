@@ -81,6 +81,30 @@
                 </div>
             </div>
 
+            <!-- 综合评价（结束面试后显示） -->
+            <div class="card mb-3 d-none" id="evaluationCard">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-clipboard-check"></i> 面试综合评价</span>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="viewReport()">
+                        <i class="bi bi-arrows-fullscreen"></i> 查看完整报告
+                    </button>
+                </div>
+                <div class="card-body" id="evaluationContent"></div>
+            </div>
+
+            <!-- 板块概览（结束面试后显示） -->
+            <div class="card mb-3 d-none" id="topicsCard">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-diagram-3"></i> 面试板块概览</span>
+                    <button class="btn btn-sm btn-outline-primary" onclick="openTopicModal()">
+                        <i class="bi bi-arrows-fullscreen"></i> 按板块查看完整对话
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="topicsSummary" class="row g-2"></div>
+                </div>
+            </div>
+
             <!-- 对话记录 -->
             <div class="card mb-3">
                 <div class="card-header"><i class="bi bi-chat-left-text"></i> 面试对话记录</div>
@@ -129,6 +153,23 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" id="reportContent"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 完整对话（按板块）弹窗 -->
+<div class="modal fade" id="topicModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-diagram-3 me-2"></i>完整对话 - 按板块查看</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="topicModalBody">
+                <div class="text-center py-4 text-muted">
+                    <span class="spinner-border"></span> 加载中...
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -182,6 +223,28 @@ async function loadSessions() {
     renderSessionList();
 }
 
+async function deleteSession(sessionId, candName, round) {
+    if (!confirm(`确定删除 ${candName} 的第${round}轮面试记录？\n删除后不可恢复。`)) return;
+    try {
+        const res = await apiCall(`/api/interviews/${sessionId}`, 'DELETE');
+        if (res.code === 200) {
+            showToast(`已删除 ${candName} 第${round}轮面试`, 'success');
+            // 如果删除的是当前选中的会话，清空工作区
+            if (currentSession && currentSession.id === sessionId) {
+                currentSession = null;
+                document.getElementById('workspace').classList.add('d-none');
+                document.getElementById('emptyWorkspace').classList.remove('d-none');
+            }
+            // 重新加载会话列表（轮次编号会自动重算）
+            await loadSessions();
+        } else {
+            showToast('删除失败: ' + (res.msg || '未知错误'), 'danger');
+        }
+    } catch(e) {
+        showToast('删除失败', 'danger');
+    }
+}
+
 function renderSessionList() {
     const list = document.getElementById('sessionList');
     const empty = document.getElementById('emptySessions');
@@ -205,8 +268,6 @@ function renderSessionList() {
         if (!grouped[pid]) grouped[pid] = [];
         grouped[pid].push({...s, candidate: cand});
     });
-    
-    // 获取岗位名称映射（已在 loadCandidates 中预加载）
     
     // 判断当前会话属于哪个岗位（用于自动展开）
     const activePid = currentSession ? (() => {
@@ -237,28 +298,55 @@ function renderSessionList() {
             <div id="${collapseId}" class="accordion-collapse collapse ${isExpanded ? 'show' : ''}">
                 <div class="accordion-body p-0">`;
         
+        // 按候选人分组，计算轮次编号
+        const byCandidate = {};
         sessions.forEach(s => {
-            const candName = s.candidate ? s.candidate.name : '未知';
-            const score = s.candidate ? s.candidate.match_score : null;
-            const statusClass = s.status === 'completed' ? 'success' : s.status === 'in_progress' ? 'primary' : 'secondary';
-            const statusText = s.status === 'completed' ? '已完成' : s.status === 'in_progress' ? '进行中' : '准备中';
-            const active = currentSession && currentSession.id === s.id ? 'border-start border-primary border-3 bg-primary bg-opacity-10' : '';
-            
-            html += `
-                <a href="#" class="d-flex justify-content-between align-items-center px-4 py-2 text-decoration-none border-bottom ${active}" 
-                    onclick="selectSession(${s.id})" style="font-size:0.85rem;">
-                    <div class="d-flex align-items-center gap-2">
-                        <i class="bi bi-person-circle text-muted"></i>
-                        <div>
-                            <div><strong>${candName}</strong></div>
-                            <small class="text-muted">${s.created_at}</small>
+            const cid = s.candidate_id;
+            if (!byCandidate[cid]) byCandidate[cid] = [];
+            byCandidate[cid].push(s);
+        });
+        
+        // 每个候选人的会话按时间升序排列，编轮次号
+        Object.values(byCandidate).forEach(candSessions => {
+            candSessions.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            candSessions.forEach((s, idx) => { s._round = idx + 1; });
+        });
+        
+        // 按候选人名称排序后渲染
+        const sortedCandidates = Object.values(byCandidate).sort((a, b) => {
+            const nameA = a[0].candidate ? a[0].candidate.name : '';
+            const nameB = b[0].candidate ? b[0].candidate.name : '';
+            return nameA.localeCompare(nameB, 'zh');
+        });
+        
+        sortedCandidates.forEach(candSessions => {
+            candSessions.forEach(s => {
+                const candName = s.candidate ? s.candidate.name : '未知';
+                const score = s.candidate ? s.candidate.match_score : null;
+                const statusClass = s.status === 'completed' ? 'success' : s.status === 'in_progress' ? 'primary' : 'secondary';
+                const statusText = s.status === 'completed' ? '已完成' : s.status === 'in_progress' ? '进行中' : '准备中';
+                const active = currentSession && currentSession.id === s.id ? 'border-start border-primary border-3 bg-primary bg-opacity-10' : '';
+                
+                html += `
+                <div class="d-flex align-items-center px-3 py-2 border-bottom ${active}" style="font-size:0.85rem;">
+                    <a href="#" class="flex-grow-1 text-decoration-none" onclick="selectSession(${s.id})">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge bg-info" style="font-size:0.65rem; min-width:2.2em;">第${s._round}轮</span>
+                            <div>
+                                <div><strong>${candName}</strong></div>
+                                <small class="text-muted">${s.created_at}</small>
+                            </div>
                         </div>
-                    </div>
+                    </a>
                     <div class="d-flex align-items-center gap-1">
                         ${score ? `<span class="badge bg-${score >= 70 ? 'success' : score >= 50 ? 'warning' : 'danger'}" style="font-size:0.65rem;">${score}</span>` : ''}
                         <span class="badge bg-${statusClass}" style="font-size:0.65rem;">${statusText}</span>
+                        <button class="btn btn-sm btn-outline-danger border-0 p-0 ms-1" onclick="event.stopPropagation(); deleteSession(${s.id}, '${candName}', ${s._round})" title="删除此轮面试">
+                            <i class="bi bi-trash" style="font-size:0.75rem;"></i>
+                        </button>
                     </div>
-                </a>`;
+                </div>`;
+            });
         });
         
         html += `</div></div></div>`;
@@ -278,9 +366,13 @@ async function selectSession(sessionId) {
     document.getElementById('workspace').classList.remove('d-none');
     document.getElementById('emptyWorkspace').classList.add('d-none');
     
-    // 更新标题
+    // 更新标题（含轮次编号）
     const cand = candidatesData.find(c => c.id === currentSession.candidate_id);
-    document.getElementById('sessionTitle').textContent = `${cand ? cand.name : ''} 的面试`;
+    const candSessions = sessionsData
+        .filter(s => s.candidate_id === currentSession.candidate_id)
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const roundNum = candSessions.findIndex(s => s.id === currentSession.id) + 1;
+    document.getElementById('sessionTitle').textContent = `${cand ? cand.name : ''} 的面试（第${roundNum}轮）`;
     document.getElementById('sessionInfo').textContent = `会话ID: ${currentSession.id} | 创建于 ${currentSession.created_at}`;
     
     const statusClass = currentSession.status === 'completed' ? 'bg-success' : currentSession.status === 'in_progress' ? 'bg-primary' : 'bg-secondary';
@@ -308,12 +400,19 @@ async function selectSession(sessionId) {
         document.getElementById('questionsList').innerHTML = currentQuestions.map((q, i) => {
             const qText = q.question || q;
             const diffBadge = q.difficulty === 'hard' ? 'danger' : q.difficulty === 'medium' ? 'warning' : 'info';
+            const directions = Array.isArray(q.answer_directions) && q.answer_directions.length
+                ? `<div class="mt-1 d-flex flex-wrap gap-1 ps-5">
+                     <span class="small text-muted me-1" style="font-size:0.7rem;">关键词：</span>
+                     ${q.answer_directions.map(d => `<span class="badge bg-light text-dark border" style="font-size:0.7rem;">${escapeHtml(String(d))}</span>`).join('')}
+                   </div>`
+                : '';
             return `
-            <div class="mb-2 p-2 bg-light rounded" style="cursor:pointer;" onclick="pickQuestion(this)" data-q="${qText.replace(/"/g,'&quot;')}">
+            <div class="mb-2 p-2 bg-light rounded" style="cursor:pointer;" onclick="pickQuestion(this)" data-q="${escapeAttr(qText)}">
                 <span class="badge bg-primary me-1" style="font-size:0.9rem;">Q${i+1}</span>
                 <span class="badge bg-${diffBadge} me-1">${q.difficulty || 'medium'}</span>
                 <span class="badge bg-secondary me-2">${q.category || ''}</span>
                 ${qText}
+                ${directions}
             </div>`;
         }).join('');
     }
@@ -353,8 +452,207 @@ async function selectSession(sessionId) {
     // 只有已完成的会话才显示“添加新一轮面试”
     const btnNewRound = document.getElementById('btnNewRound');
     btnNewRound.style.display = isCompleted ? '' : 'none';
-    
+
+    // 加载综合评价卡片（已完成且有报告）
+    loadEvaluationCard();
+
+    // 加载板块概览（仅已完成会话）
+    if (isCompleted) {
+        loadTopicsSummary();
+    } else {
+        document.getElementById('topicsCard').classList.add('d-none');
+    }
+
     loadSessions();
+}
+
+// ====== 综合评价（仅已完成且有报告） ======
+
+function renderEvaluationCard(report) {
+    const dims = report.dimensions || {};
+    const score = report.overall_score || 0;
+    const rec = report.recommendation || '-';
+    // 推荐等级配色（与上面的对照表严格匹配）。注意：「不推荐」必须先于「推荐」判断，避免被「推荐」超串误中
+    const recBadge = rec.includes('强烈推荐') ? 'success'
+        : rec.includes('不推荐') ? 'danger'
+        : rec.includes('推荐') ? 'primary'
+        : rec.includes('待定') ? 'warning'
+        : 'secondary';
+    // 综合分配色
+    const scoreBadge = score >= 80 ? 'success' : score >= 65 ? 'primary' : score >= 45 ? 'warning' : 'danger';
+    // 五维评分进度条
+    const dimsHtml = Object.entries(dims).map(([k, v]) => {
+        const pct = Math.min(100, Math.max(0, (v / 10) * 100));
+        const color = v >= 7 ? 'success' : v >= 5 ? 'warning' : 'danger';
+        return `
+        <div class="mb-2">
+            <div class="d-flex justify-content-between small mb-1">
+                <span class="text-muted">${escapeHtml(k)}</span>
+                <strong class="text-${color === 'warning' ? 'warning' : color}">${v}/10</strong>
+            </div>
+            <div class="progress" style="height: 6px;">
+                <div class="progress-bar bg-${color}" style="width: ${pct}%;"></div>
+            </div>
+        </div>`;
+    }).join('') || '<div class="text-muted small">暂无维度评分</div>';
+
+    const strengths = (report.strengths || []).slice(0, 3).map(s => {
+        if (typeof s === 'string') return `<li>${escapeHtml(s)}</li>`;
+        return `<li><strong>${escapeHtml(s.point || '')}</strong>${s.evidence ? '<br><small class="text-muted">' + escapeHtml(s.evidence) + '</small>' : ''}</li>`;
+    }).join('') || '<li class="text-muted small">暂无明显优势</li>';
+
+    const weaknesses = (report.weaknesses || []).slice(0, 3).map(w => {
+        if (typeof w === 'string') return `<li>${escapeHtml(w)}</li>`;
+        return `<li><strong>${escapeHtml(w.point || '')}</strong>${w.evidence ? '<br><small class="text-muted">' + escapeHtml(w.evidence) + '</small>' : ''}${w.suggestion ? '<br><small class="text-info"><i class="bi bi-lightbulb"></i> ' + escapeHtml(w.suggestion) + '</small>' : ''}</li>`;
+    }).join('') || '<li class="text-muted small">未发现明显不足</li>';
+
+    return `
+    <div class="row g-3">
+        <!-- 左侧：综合分 + 推荐 -->
+        <div class="col-md-4">
+            <div class="text-center p-3 bg-light rounded h-100">
+                <div class="text-muted small mb-1">综合评分</div>
+                <div class="display-4 fw-bold text-${scoreBadge}">${score}</div>
+                <div class="text-muted small">/ 100</div>
+                <hr class="my-2">
+                <div class="text-muted small mb-1">招聘建议</div>
+                <div class="mb-2"><span class="badge bg-${recBadge} px-3 py-2" style="font-size:1rem;">${escapeHtml(rec)}</span></div>
+                ${report.recommendation_reason ? `<small class="text-muted">${escapeHtml(report.recommendation_reason)}</small>` : ''}
+            </div>
+        </div>
+        <!-- 右侧：五维评分 -->
+        <div class="col-md-8">
+            <div class="mb-3">
+                <h6 class="mb-2"><i class="bi bi-bar-chart me-1"></i>五维评分</h6>
+                ${dimsHtml}
+            </div>
+        </div>
+    </div>
+    <hr>
+    <div class="row g-3">
+        <div class="col-md-6">
+            <h6 class="text-success"><i class="bi bi-star-fill me-1"></i>主要优势</h6>
+            <ul class="small mb-0">${strengths}</ul>
+        </div>
+        <div class="col-md-6">
+            <h6 class="text-warning"><i class="bi bi-exclamation-triangle-fill me-1"></i>主要不足</h6>
+            <ul class="small mb-0">${weaknesses}</ul>
+        </div>
+    </div>
+    ${report.summary ? `
+    <hr>
+    <div class="ai-result small">
+        <i class="bi bi-chat-quote me-1"></i>${escapeHtml(report.summary)}
+    </div>` : ''}
+    `;
+}
+
+function loadEvaluationCard() {
+    const card = document.getElementById('evaluationCard');
+    const content = document.getElementById('evaluationContent');
+    if (!card || !content) return;
+    if (!currentSession || !currentSession.report) {
+        card.classList.add('d-none');
+        return;
+    }
+    let report;
+    try {
+        report = typeof currentSession.report === 'string' ? JSON.parse(currentSession.report) : currentSession.report;
+    } catch (e) {
+        content.innerHTML = '<div class="text-danger small">报告数据解析失败</div>';
+        card.classList.remove('d-none');
+        return;
+    }
+    if (!report || typeof report !== 'object') {
+        card.classList.add('d-none');
+        return;
+    }
+    content.innerHTML = renderEvaluationCard(report);
+    card.classList.remove('d-none');
+}
+
+// ====== 板块（Topic）相关函数 ======
+
+async function loadTopicsSummary() {
+    if (!currentSession) return;
+    const res = await apiCall(`/api/interviews/${currentSession.id}/topics`);
+    const topicsCard = document.getElementById('topicsCard');
+    const topicsSummary = document.getElementById('topicsSummary');
+    if (res.code !== 200 || !res.data.topics || res.data.topics.length === 0) {
+        topicsCard.classList.add('d-none');
+        return;
+    }
+    const topics = res.data.topics;
+    topicsCard.classList.remove('d-none');
+    topicsSummary.innerHTML = topics.map(t => {
+        const dCount = (t.dialogs || []).length;
+        return `
+        <div class="col-md-6">
+            <div class="p-3 bg-white rounded border h-100">
+                <div class="d-flex align-items-center mb-1">
+                    <span class="badge bg-primary me-2">板块 ${t.topic_index}</span>
+                    <strong>${escapeHtml(t.title || '未命名板块')}</strong>
+                </div>
+                <p class="mb-1 small text-muted">${escapeHtml(t.summary || '')}</p>
+                <small class="text-info"><i class="bi bi-chat-quote"></i> 包含 ${dCount} 组问答</small>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function openTopicModal() {
+    if (!currentSession) return;
+    const modalEl = document.getElementById('topicModal');
+    const body = document.getElementById('topicModalBody');
+    body.innerHTML = '<div class="text-center py-4 text-muted"><span class="spinner-border"></span> 加载中...</div>';
+    new bootstrap.Modal(modalEl).show();
+    const res = await apiCall(`/api/interviews/${currentSession.id}/topics`);
+    if (res.code !== 200) {
+        body.innerHTML = '<div class="text-danger">加载失败</div>';
+        return;
+    }
+    const topics = res.data.topics || [];
+    const orphans = res.data.orphan_dialogs || [];
+    if (topics.length === 0 && orphans.length === 0) {
+        body.innerHTML = '<div class="text-muted text-center py-4">暂无板块数据</div>';
+        return;
+    }
+    const topicHtml = topics.map(t => {
+        const dialogs = t.dialogs || [];
+        const dialogHtml = dialogs.map(d => {
+            const fb = d.ai_feedback ? (typeof d.ai_feedback === 'string' ? JSON.parse(d.ai_feedback) : d.ai_feedback) : null;
+            return `
+            <div class="mb-3 p-3 bg-white rounded border">
+                <div class="mb-2">
+                    <strong class="text-primary">Q${d.seq}:</strong>
+                    ${d.parent_seq ? `<span class="badge bg-info ms-1" style="font-size:0.75rem;"><i class="bi bi-arrow-return-right"></i> 追问自 Q${d.parent_seq}</span>` : ''}
+                    ${escapeHtml(d.question || '')}
+                </div>
+                <div class="mb-2"><strong class="text-success">A${d.seq}:</strong> ${escapeHtml(d.answer || '')}</div>
+                ${fb ? `<div class="mt-2 p-2 ai-result"><small>${renderFeedbackBrief(fb)}</small></div>` : ''}
+            </div>`;
+        }).join('') || '<div class="text-muted small">该板块暂无对话</div>';
+        return `
+        <div class="mb-4">
+            <div class="d-flex align-items-center mb-2 pb-2 border-bottom">
+                <span class="badge bg-primary me-2">板块 ${t.topic_index}</span>
+                <h5 class="mb-0">${escapeHtml(t.title || '未命名板块')}</h5>
+            </div>
+            <p class="text-muted small mb-3"><i class="bi bi-info-circle"></i> ${escapeHtml(t.summary || '')}</p>
+            ${dialogHtml}
+        </div>`;
+    }).join('');
+    const orphanHtml = orphans.length ? `
+        <div class="mt-4 pt-3 border-top">
+            <h6 class="text-muted"><i class="bi bi-question-circle"></i> 未归入板块的对话（${orphans.length}）</h6>
+            ${orphans.map(d => `
+                <div class="mb-2 p-2 bg-light rounded">
+                    <strong class="text-primary">Q${d.seq}:</strong> ${escapeHtml(d.question || '')}<br>
+                    <strong class="text-success">A${d.seq}:</strong> ${escapeHtml(d.answer || '')}
+                </div>
+            `).join('')}
+        </div>` : '';
+    body.innerHTML = topicHtml + orphanHtml;
 }
 
 function renderFeedbackBrief(feedbackStr) {
@@ -480,6 +778,13 @@ function showReport(report) {
 
 function pickQuestion(el) {
     document.getElementById('inputQuestion').value = el.dataset.q;
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeAttr(s) {
+    return escapeHtml(s);
 }
 
 async function submitDialog() {

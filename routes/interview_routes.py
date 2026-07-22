@@ -1,5 +1,5 @@
 from flask import Blueprint, request, render_template
-from models.interview import InterviewSession, InterviewDialog
+from models.interview import InterviewSession, InterviewDialog, InterviewTopic
 from constants import SessionStatus
 from repositories.interview_repository import InterviewRepository
 from repositories.candidate_repository import CandidateRepository
@@ -57,6 +57,17 @@ def get_session(session_id):
     })
 
 
+@interview_bp.route('/<int:session_id>', methods=['DELETE'])
+@login_required(role='admin')
+def delete_session(session_id):
+    """删除面试会话（级联删除对话记录）"""
+    session = InterviewRepository.find_session_by_id(session_id)
+    if not session:
+        return error('面试会话不存在', 404)
+    InterviewRepository.delete_session(session)
+    return success({'id': session_id})
+
+
 @interview_bp.route('/<int:session_id>/dialog', methods=['POST'])
 @login_required(role='admin')
 def add_dialog(session_id):
@@ -109,7 +120,7 @@ def add_dialog(session_id):
 @interview_bp.route('/<int:session_id>/finish', methods=['POST'])
 @login_required(role='admin')
 def finish_interview(session_id):
-    """结束面试并生成评价报告"""
+    """结束面试：板块切分 → 以板块摘要作为 3+1 评估输入"""
     session = InterviewRepository.find_session_by_id(session_id)
     if not session:
         return error('面试会话不存在', 404)
@@ -117,13 +128,12 @@ def finish_interview(session_id):
     session.status = SessionStatus.COMPLETED
     InterviewRepository.update_session(session)
 
-    # 拼接全部对话（追问加标记，便于报告区分）
+    # 收集本场完整对话（seq/question/answer 供板块切分师使用）
     dialogs = InterviewRepository.find_dialogs_by_session(session_id)
-    dialog_lines = []
-    for d in dialogs:
-        tag = f" [追问自Q{d.parent_seq}]" if d.parent_seq else ""
-        dialog_lines.append(f"Q{d.seq}{tag}: {d.question}\nA{d.seq}: {d.answer}")
-    full_dialogs = '\n'.join(dialog_lines)
+    full_dialogs = [
+        {'seq': d.seq, 'question': d.question or '', 'answer': d.answer or ''}
+        for d in dialogs
+    ]
 
     candidate = CandidateRepository.find_by_id(session.candidate_id)
     position = PositionRepository.find_by_id(candidate.position_id)
@@ -136,16 +146,88 @@ def finish_interview(session_id):
         except:
             pass
 
-    # 纯面试评价：不传简历/岗位分析数据，只传对话和出题策略
-    report = InterviewService.generate_report(position, candidate.name, full_dialogs,
+    # ===== 阶段A：板块切分（单 Agent）=====
+    segment_result = InterviewService.segment_topics(candidate.name, position.name, full_dialogs)
+    topics = (segment_result or {}).get('topics', []) if segment_result else []
+    logger.info(f'[finish_interview] 切分出 {len(topics)} 个板块')
+
+    # 清除旧板块（重跑场景）
+    InterviewRepository.delete_topics_by_session(session_id)
+
+    # 保存板块到 DB（save_topic 会同时回填 dialog.topic_id）
+    saved_topics = []
+    for t in topics:
+        topic = InterviewTopic(
+            session_id=session_id,
+            topic_index=t.get('topic_index', len(saved_topics) + 1),
+            title=(t.get('topic_title') or t.get('title') or '未命名板块')[:120],
+            summary=t.get('topic_summary') or t.get('summary') or '',
+            dialog_ids_json=json.dumps(t.get('dialog_indexes') or t.get('dialog_ids') or [], ensure_ascii=False)
+        )
+        InterviewRepository.save_topic(topic)
+        saved_topics.append(topic)
+
+    # ===== 阶段B：以板块摘要作为 3+1 评估输入 =====
+    if saved_topics:
+        topic_blocks = []
+        for t in saved_topics:
+            topic_blocks.append(
+                f"### 板块 {t.topic_index}：{t.title}\n{t.summary}"
+            )
+        full_dialogs_text = '\n\n'.join(topic_blocks)
+    else:
+        # 降级：仍用原始拼接
+        dialog_lines = []
+        for d in dialogs:
+            tag = f" [追问自Q{d.parent_seq}]" if d.parent_seq else ""
+            dialog_lines.append(f"Q{d.seq}{tag}: {d.question}\nA{d.seq}: {d.answer}")
+        full_dialogs_text = '\n'.join(dialog_lines)
+
+    report = InterviewService.generate_report(position, candidate.name, full_dialogs_text,
                                               questions_plan=questions_plan)
 
     if report:
+        # 附加板块信息到报告（供面试工作台一次性渲染使用）
+        if isinstance(report, dict):
+            report['topics'] = [t.to_dict() for t in saved_topics]
         session.report = json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else report
         InterviewRepository.update_session(session)
         return success({'report': report})
     else:
         return error('生成评价报告失败', 502)
+
+
+@interview_bp.route('/<int:session_id>/topics', methods=['GET'])
+@login_required(role='admin')
+def list_session_topics(session_id):
+    """获取一场面试的所有板块（含各板块对话详情，按板块分组）"""
+    session = InterviewRepository.find_session_by_id(session_id)
+    if not session:
+        return error('面试会话不存在', 404)
+
+    topics = InterviewRepository.find_topics_by_session(session_id)
+    dialogs = InterviewRepository.find_dialogs_by_session(session_id)
+
+    # 构造 topic_id → dialogs 映射
+    dialogs_by_topic = {}
+    no_topic_dialogs = []
+    for d in dialogs:
+        if d.topic_id:
+            dialogs_by_topic.setdefault(d.topic_id, []).append(d)
+        else:
+            no_topic_dialogs.append(d)
+
+    topics_payload = []
+    for t in topics:
+        td = t.to_dict()
+        # 附加该板块下的对话详情
+        td['dialogs'] = [d.to_dict() for d in dialogs_by_topic.get(t.id, [])]
+        topics_payload.append(td)
+
+    return success({
+        'topics': topics_payload,
+        'orphan_dialogs': [d.to_dict() for d in no_topic_dialogs]  # 未划入板块的对话（保底）
+    })
 
 
 @interview_bp.route('/<int:session_id>/follow-up', methods=['POST'])
@@ -201,6 +283,93 @@ home_bp = Blueprint('home', __name__)
 def index():
     return render_template('index.html')
 
+@interview_bp.route('/dialog/evaluate', methods=['POST'])
+@login_required(role='admin')
+def evaluate_dialog():
+    """实时评估候选人回答（接入真实AI Agent，同时保存对话到数据库）"""
+    data = request.get_json()
+    if not data or not data.get('answer'):
+        return error('回答内容不能为空', 400)
+    
+    session_id = data.get('session_id')
+    answer = data['answer']
+    question = data.get('question', '')
+    context = data.get('context', [])
+    
+    # 获取会话信息
+    if not session_id:
+        return error('缺少session_id', 400)
+    
+    session = InterviewRepository.find_session_by_id(session_id)
+    if not session:
+        return error('面试会话不存在', 404)
+    
+    # 更新会话状态为进行中（如果是 preparing 状态）
+    from constants import SessionStatus
+    if session.status == SessionStatus.PREPARING:
+        session.status = SessionStatus.IN_PROGRESS
+        InterviewRepository.update_session(session)
+    
+    candidate = CandidateRepository.find_by_id(session.candidate_id)
+    position = PositionRepository.find_by_id(candidate.position_id)
+    
+    # 获取历史对话文本
+    existing_dialogs = InterviewRepository.find_dialogs_by_session(session_id)
+    dialog_history = '\n'.join([
+        f"Q{d.seq}: {d.question}\nA{d.seq}: {d.answer}"
+        for d in existing_dialogs
+    ])
+    
+    # 调用真实AI Agent评估
+    feedback = InterviewService.get_dialog_feedback(
+        candidate.name, position.name,
+        candidate.resume_text or '',
+        dialog_history, question, answer
+    )
+    
+    # 校验并修正评分（确保在1-10范围内）
+    if feedback and isinstance(feedback, dict):
+        if 'score' in feedback:
+            try:
+                score = int(feedback['score'])
+                feedback['score'] = max(1, min(10, score))
+            except (ValueError, TypeError):
+                feedback['score'] = 5
+        # 校验五维评分
+        if 'score_breakdown' in feedback and isinstance(feedback['score_breakdown'], dict):
+            for k, v in feedback['score_breakdown'].items():
+                try:
+                    feedback['score_breakdown'][k] = max(1, min(10, int(v)))
+                except (ValueError, TypeError):
+                    feedback['score_breakdown'][k] = 5
+    
+    # 保存对话记录到数据库
+    try:
+        dialog = InterviewDialog(
+            session_id=session_id,
+            question=question or '(未指定问题)',
+            answer=answer,
+            ai_feedback=json.dumps(feedback, ensure_ascii=False) if feedback else None,
+            seq=len(existing_dialogs) + 1
+        )
+        InterviewRepository.save_dialog(dialog)
+    except Exception as e:
+        logger.error(f'保存对话失败: {e}')
+    
+    if feedback:
+        return success({'feedback': feedback})
+    else:
+        # AI 分析失败，返回简化结果
+        return success({
+            'feedback': {
+                'score': 5,
+                'answer_quality': '待评估',
+                'evaluation': 'AI 分析暂时不可用，请稍后重试。',
+                'follow_up_questions': []
+            }
+        })
+
+
 @home_bp.route('/positions')
 @login_required(role='admin')
 def positions_page():
@@ -215,3 +384,8 @@ def candidates_page():
 @login_required(role='admin')
 def interview_page():
     return render_template('interview.html')
+
+@home_bp.route('/live-interview')
+@login_required(role='admin')
+def live_interview_page():
+    return render_template('live_interview.html')

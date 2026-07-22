@@ -12,6 +12,87 @@ class ComprehensiveMetaEvaluatorAgent(BaseAgent):
 
     输出：综合元评估报告（最终评分 + 招聘建议 + 跨阶段分析 + 决策依据）。
     """
+
+    # -------- 权重与推荐等级映射表（由系统计算使用）--------
+    # 不同轮次下，简历评估 vs 面试评价 的权重
+    META_WEIGHTS = {
+        0: {'resume': 1.00, 'rounds': []},                       # 仅有简历
+        1: {'resume': 0.35, 'rounds': [0.65]},                  # 1 轮
+        2: {'resume': 0.20, 'rounds': [0.35, 0.45]},            # 2 轮
+        # 3+ 轮：简历 15%，面试递增（总 85%）
+    }
+
+    # 五档推荐等级阈值表
+    RECOMMENDATION_TABLE = [
+        (85, '强烈推荐'),
+        (70, '推荐'),
+        (60, '有条件推荐'),
+        (50, '不推荐'),
+        (0,  '强烈不推荐'),
+    ]
+
+    @staticmethod
+    def _round_weights(n):
+        """n 轮面试的递增权重（线性递增 1..n, 归一后总和为 1）"""
+        if n <= 0:
+            return []
+        weights = [i + 1 for i in range(n)]
+        total = sum(weights)
+        return [w / total for w in weights]
+
+    @classmethod
+    def compute_overall_score_raw(cls, resume_match_score, round_scores_100):
+        """计算 raw 综合分（保留两位小数），方便保存到 computation 调试字段。"""
+        n = len(round_scores_100 or [])
+        if n >= 3:
+            resume_w = 0.15
+            round_w_total = 0.85
+            round_weights = cls._round_weights(n)
+            s = (resume_match_score or 0) * resume_w
+            s += sum(score * w for score, w in zip(round_scores_100, round_weights)) * round_w_total
+            return round(s, 2)
+        # 复用固定映射
+        conf = cls.META_WEIGHTS.get(n, cls.META_WEIGHTS[0])
+        s = (resume_match_score or 0) * conf['resume']
+        for i, w in enumerate(conf['rounds']):
+            if i < n:
+                s += round_scores_100[i] * w
+        return round(s, 2)
+
+    @classmethod
+    def compute_overall_score(cls, resume_match_score, round_scores_100):
+        """计算最终综合分（取整 0-100）。"""
+        raw = cls.compute_overall_score_raw(resume_match_score, round_scores_100)
+        return int(round(raw))
+
+    @classmethod
+    def recommendation_for(cls, score):
+        """根据综合分查五档推荐等级"""
+        for threshold, label in cls.RECOMMENDATION_TABLE:
+            if score >= threshold:
+                return label
+        return '强烈不推荐'
+
+    @classmethod
+    def decision_rationale_for(cls, score, round_scores, resume_match_score):
+        """根据计算数据生成 1-2 句话决策理由（LLM 未提供时使用）"""
+        label = cls.recommendation_for(score)
+        n = len(round_scores or [])
+        if n == 0 and not resume_match_score:
+            return '数据不足，无法生成评判。'
+        avg_round = round(sum(round_scores) / len(round_scores), 1) if round_scores else None
+        if label == '强烈推荐':
+            return f'综合表现优秀（{score}），各项证据一致，可推进 offer。'
+        if label == '推荐':
+            return f'综合表现良好（{score}），面试表现均合门槛，推荐推进下一轮。'
+        if label == '有条件推荐':
+            return (f'综合表现达到门槛（{score}），可推进但需关注以下几点风险。'
+                    + (f'面试平均 {avg_round}/100。' if avg_round else ''))
+        if label == '不推荐':
+            return (f'综合表现未达推荐门槛（{score}），关键面试环节表现偏弱，'
+                    f'建议暂不推进。')
+        return f'综合表现明显低于岗位要求（{score}），不推荐推进。'
+
     AGENT_NAME = "综合元评估师"
     SYSTEM_PROMPT = """你是「综合元评估师」，一位拥有 20 年经验的招聘决策委员会主席。
 
@@ -105,21 +186,30 @@ class ComprehensiveMetaEvaluatorAgent(BaseAgent):
 3. 多轮结论是否趋同
 
 ### C. 综合评分
-1. **综合得分**（0-100）：按上述权重方案加权
-2. **五维最终评分**（0-10分/维）：
-   - 技术能力
-   - 项目经验
-   - 系统设计
-   - 沟通表达
-   - 学习潜力
+**重要：本阶段的 `overall_score`、`final_recommendation`、`decision_rationale` 三个字段均由系统根据预设权重和交叉验证表自动生成，你**不要、不要、不要填写这三个字段（你填了也会被覆写）**。**
 
-### D. 最终决策
-从以下五档中选择：
-- **强烈推荐**：综合 85+ 且无明显短板
-- **推荐**：综合 70+ 且风险可控
-- **有条件推荐**：综合 60+ 但需关注某些风险
-- **不推荐**：综合 50-60 或有关键短板
-- **强烈不推荐**：综合 <50 或有严重问题
+系统使用以下权重方案：
+- 有 1 轮面试时：简历评估 35% + 面试评价 65%
+- 有 2 轮面试时：简历评估 20% + 第一轮面试 35% + 第二轮面试 45%
+- 有 3+ 轮面试时：简历评估 15% + 面试评价按轮次递增权重（总 85%）
+
+系统使用以下五档推荐等级映射表：
+- **85-100** → 强烈推荐
+- **70-84** → 推荐
+- **60-69** → 有条件推荐
+- **50-59** → 不推荐
+- **0-49**  → 强烈不推荐
+
+**你任务只做两类工作：**
+1. **跨阶段交叉分析**（cross_stage_analysis）：简历 vs 面试的一致性检查、多轮面试追踪
+2. **叙述性结论**：key_strengths / key_risks / onboarding_suggestions / candidate_message / summary
+
+`dimension_scores` （五维 0-10）是允许填写的，系统仅将其作为信息保存，**不影响综合评分**。
+
+### 核心价值观
+- 以数据为依据：每个判断都要指出具体来源（简历评估中X...、第N轮面试中...）
+- 交叉验证：简历说什么 vs 面试表现如何，发现不一致要标注
+- 决策要果断（让系统在分数上表现果断、你可在叙述中明确快）
 
 ## 输出格式（严格 JSON）
 {{
@@ -294,14 +384,17 @@ class ComprehensiveMetaEvaluatorAgent(BaseAgent):
             return "无面试评价数据"
         parts = []
         for i, sess in enumerate(sessions):
-            round_num = sess.get("round", i + 1)
-            report = sess.get("report", {})
+            round_num = sess.get("round", i + 1) if isinstance(sess, dict) else i + 1
+            report_raw = sess.get("report") if isinstance(sess, dict) else None
+            report = report_raw if report_raw else {}
             if isinstance(report, str):
                 try:
                     report = json.loads(report)
                 except Exception:
                     parts.append(f"第{round_num}轮: 报告解析失败")
                     continue
+            if not isinstance(report, dict):
+                report = {}
             # 基本信息
             score = report.get("overall_score", "?")
             rec = report.get("recommendation", "")

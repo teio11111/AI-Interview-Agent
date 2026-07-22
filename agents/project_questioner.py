@@ -17,12 +17,15 @@ class ProjectQuestionerAgent(BaseAgent):
 - 聚焦候选人"做了什么"而非"知道什么"
 - 每个问题必须追溯到简历中的具体项目
 - 通过追问细节验证候选人是否真正参与了项目
+- **问题要精简**：一道题最多聚焦 2 个功能点/技术点/决策点，不要大而泛
+- **必须给出回答方向**：每道题附 2-4 个关键词/回答方向，便于面试官/候选人把握要点
 
 工作原则：
 - 严格引用简历原文（resume_reference），不能凭空出题
 - 问题要探测：具体负责内容、技术挑战、选型原因、改进思路
 - 问题有梯度：从验证基础到探测深度
 - 每道题预设追问方向
+- 每道题必须包含 answer_directions 字段（2-4 个回答关键词/方向）
 
 请始终以严格的 JSON 格式输出，不要输出任何解释性文字。"""
 
@@ -43,6 +46,11 @@ class ProjectQuestionerAgent(BaseAgent):
         prompt = f"""## 任务
 你是项目深挖出题官。请从候选人简历中提取 2-3 个最有价值的项目，
 为每个项目设计 1 道深挖题（共 3 道题）。
+
+## 精简原则（重要）
+- 一道题最多聚焦 2 个功能点/技术点/决策点，避免大而泛
+- 例：「Redis 在你项目中怎么用的？主要缓存了哪些数据？」比「介绍下你项目中的 Redis 使用」要好
+- 不要把多个独立问题打包到一道题里
 
 ## 岗位信息
 - 岗位名称：{position_name}
@@ -74,7 +82,7 @@ class ProjectQuestionerAgent(BaseAgent):
 {{
     "questions": [
         {{
-            "question": "具体问题（必须引用简历中的项目名称和技术细节）",
+            "question": "具体问题（必须引用简历中的项目名称和技术细节，单题最多2个功能点）",
             "category": "项目深挖",
             "difficulty": "easy/medium/hard",
             "resume_reference": "简历中对应的原文引用",
@@ -82,7 +90,8 @@ class ProjectQuestionerAgent(BaseAgent):
             "intent": "这道题想考察什么能力",
             "expected_depth": "候选人应该回答到什么程度算合格",
             "follow_up_hints": ["回答好可追问什么", "回答模糊应追问什么"],
-            "probe_angle": "具体负责/技术选型/改进思路"
+            "probe_angle": "具体负责/技术选型/改进思路",
+            "answer_directions": ["回答关键词/方向1", "回答关键词/方向2", "回答关键词/方向3", "回答关键词/方向4"]
         }}
     ]
 }}"""

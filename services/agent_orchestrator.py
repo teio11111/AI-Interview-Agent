@@ -21,6 +21,7 @@ from agents import (
     InterviewTechEvaluatorAgent,
     InterviewSoftEvaluatorAgent,
     InterviewEvalCoordinatorAgent,
+    TopicSegmenterAgent,
     ComprehensiveMetaEvaluatorAgent,
 )
 from utils.logger import logger
@@ -80,10 +81,13 @@ class AgentOrchestrator:
         self.interview_tech_eval = InterviewTechEvaluatorAgent()
         self.interview_soft_eval = InterviewSoftEvaluatorAgent()
         self.interview_eval_coord = InterviewEvalCoordinatorAgent()
-        
-        # 综合元评估（1个）
-        self.comprehensive_meta_eval = ComprehensiveMetaEvaluatorAgent()
-        
+
+        # 板块切分（1个，面试结束后使用）
+        self.topic_segmenter = TopicSegmenterAgent()
+
+        # 综合元评估（最后阶段的最终裁判）
+        self.meta_evaluator = ComprehensiveMetaEvaluatorAgent()
+
         logger.info('Agent 编排器初始化完成（多智能体协作模式）')
 
     def _emit(self, on_progress, event_type, agent_name, stage, message=''):
@@ -372,7 +376,65 @@ class AgentOrchestrator:
                 'tech': results.get('tech'),
                 'soft': results.get('soft'),
             }
-        
+
+        return result
+
+    # ===== 阶段5.5：板块切分（单Agent，面试结束后使用）=====
+    def segment_topics(self, candidate_name, position_name, full_dialogs,
+                      on_progress=None):
+        """板块切分师（单Agent）将完整面试对话按话题边界切成若干板块
+
+        Args:
+            candidate_name: 候选人姓名
+            position_name: 岗位名称
+            full_dialogs: 完整对话列表
+                [
+                    {'seq': 1, 'question': '...', 'answer': '...'},
+                    {'seq': 2, 'question': '...', 'answer': '...'},
+                    ...
+                ]
+            on_progress: 进度回调函数
+
+        Returns:
+            dict: {
+                'topics': [
+                    {
+                        'topic_index': 1,
+                        'topic_title': 'Redis缓存设计',
+                        'topic_summary': '候选人介绍了...',
+                        'dialog_indexes': [1, 2, 3]
+                    },
+                    ...
+                ],
+                'total_topics': 3
+            }
+        """
+        # 将对话列表转为 Q/A 文本格式
+        lines = []
+        for d in (full_dialogs or []):
+            seq = d.get('seq', '?')
+            q = (d.get('question') or '').strip()
+            a = (d.get('answer') or '').strip()
+            tag = f" [追问自Q{d.get('parent_seq')}]" if d.get('parent_seq') else ""
+            lines.append(f"Q{seq}{tag}: {q}\nA{seq}: {a}")
+        dialogs_text = '\n'.join(lines)
+
+        self._emit(on_progress, 'stage_start', '', '板块切分', '板块切分师开始切分话题...')
+        self._emit(on_progress, 'agent_start', '板块切分师', '板块切分', '正在识别话题边界...')
+
+        start = time.time()
+        result = self.topic_segmenter.segment(candidate_name, position_name, dialogs_text)
+        elapsed = round(time.time() - start, 1)
+
+        topics = (result or {}).get('topics', []) if result else []
+        t_count = len(topics)
+        self._emit(on_progress, 'agent_complete', '板块切分师', '板块切分',
+                   f'切分完成，共 {t_count} 个板块 ({elapsed}s)')
+        self._emit(on_progress, 'stage_complete', '', '板块切分', f'板块切分阶段完成，共 {t_count} 个板块')
+
+        if result and isinstance(result, dict):
+            result['total_topics'] = t_count
+
         return result
 
     # ===== 完整流程编排 =====
@@ -423,53 +485,130 @@ class AgentOrchestrator:
             'questions': questions
         }
 
-    # ===== 阶段6：综合元评估 =====
+    # ===== 阶段6：综合元评估（最终裁判）=====
     def generate_meta_evaluation(self, position, candidate,
                                  resume_evaluation, interview_sessions,
                                  on_progress=None):
-        """阶段6：综合元评估 - 汇总全链路数据生成最终决策
+        """阶段6：综合元评估
 
-        Args:
-            position: 岗位对象（含 ai_analysis）
-            candidate: 候选人对象
-            resume_evaluation: 简历 3+1 评估结果 dict
-            interview_sessions: 面试会话列表 [{round, report, questions_plan}]
-            on_progress: 进度回调函数
-
-        Returns:
-            dict: 综合元评估报告
+        汇总岗位分析 + 简历评估 + 各轮面试评价 → 最终招聘决策。
+        综合得分与招聘建议均由【系统】根据预设权重计算（避免 LLM 虚高）。
         """
-        import json
+        try:
+            # 1. 准备入参：岗位分析与简历原文
+            position_analysis = None
+            if position.ai_analysis:
+                import json
+                try:
+                    position_analysis = json.loads(position.ai_analysis) \
+                        if isinstance(position.ai_analysis, str) else position.ai_analysis
+                except Exception:
+                    logger.warning('岗位分析 JSON 解析失败，综合元评估将不含岗位信息')
 
-        # 解析岗位分析
-        position_analysis = None
-        if position.ai_analysis:
-            try:
-                position_analysis = json.loads(position.ai_analysis) if isinstance(position.ai_analysis, str) else position.ai_analysis
-            except Exception:
-                pass
+            resume_text = candidate.resume_text or ''
 
-        self._emit(on_progress, 'stage_start', '', '综合元评估', '综合元评估师开始汇总全链路数据...')
-        self._emit(on_progress, 'agent_start', '综合元评估师', '综合元评估', '正在整合岗位分析、简历评估与各轮面试数据...')
+            # 【兼容性】agent 期望 interview_sessions 是 dict 列表，但仓储返回 ORM 模型
+            # 这里统一转为 {id, round, report, questions_plan} dict 形式
+            normalized_sessions = []
+            for idx, sess in enumerate(interview_sessions or []):
+                if isinstance(sess, dict):
+                    normalized_sessions.append(sess)
+                    continue
+                # ORM 模型 → dict
+                sess_dict = {
+                    'id': getattr(sess, 'id', idx + 1),
+                    'round': idx + 1,
+                    'report': getattr(sess, 'report', None),
+                    'questions_plan': getattr(sess, 'questions_plan', None),
+                    'status': getattr(sess, 'status', None),
+                }
+                normalized_sessions.append(sess_dict)
+            interview_sessions = normalized_sessions
 
-        start = time.time()
-        result = self.comprehensive_meta_eval.evaluate(
-            position_name=position.name,
-            position_analysis=position_analysis,
-            candidate_name=candidate.name,
-            resume_text=candidate.resume_text,
-            resume_evaluation=resume_evaluation,
-            interview_sessions=interview_sessions,
-        )
-        elapsed = round(time.time() - start, 1)
+            self._emit(on_progress, 'agent_start', '综合元评估师',
+                       '综合元评估', '综合元评估师开始总结全链路数据...')
 
-        if result:
-            self._emit(on_progress, 'agent_complete', '综合元评估师', '综合元评估',
-                       f'综合元评估完成（{elapsed}s），评分={result.get("overall_score","?")}')
-            self._emit(on_progress, 'stage_complete', '', '综合元评估', '综合元评估完成')
-            logger.info(f'[编排器] 综合元评估完成: score={result.get("overall_score")}, rec={result.get("final_recommendation")}')
-        else:
-            self._emit(on_progress, 'agent_error', '综合元评估师', '综合元评估', '综合元评估失败')
-            logger.error('[编排器] 综合元评估失败')
+            # 2. 调用综合元评估师（LLM 仅负责叙述性结论）
+            result = self.meta_evaluator.evaluate(
+                position_name=position.name,
+                position_analysis=position_analysis,
+                candidate_name=candidate.name,
+                resume_text=resume_text,
+                resume_evaluation=resume_evaluation,
+                interview_sessions=interview_sessions,
+            )
 
-        return result
+            if not isinstance(result, dict):
+                logger.error('[综合元评估] 返回结果不是 dict')
+                self._emit(on_progress, 'stage_complete', '',
+                           '综合元评估', '综合元评估阶段失败')
+                return None
+
+            # 3. 提取各轮面试综合分（供 Python 加权用）
+            round_scores = []
+            for i, sess in enumerate(interview_sessions or []):
+                report = sess.get('report') if isinstance(sess, dict) else None
+                if isinstance(report, str):
+                    import json
+                    try:
+                        report = json.loads(report)
+                    except Exception:
+                        report = {}
+                if isinstance(report, dict):
+                    s = report.get('overall_score')
+                    if isinstance(s, (int, float)):
+                        round_scores.append(float(s))
+
+            # 4. 提取简历匹配度（从第一次简历评估中拿到 match_score）
+            resume_match_score = None
+            if isinstance(resume_evaluation, dict):
+                resume_match_score = resume_evaluation.get('match_score')
+                if not isinstance(resume_match_score, (int, float)):
+                    resume_match_score = None
+
+            # 5. 【系统计算】综合得分 & 招聘建议
+            final_score = ComprehensiveMetaEvaluatorAgent.compute_overall_score(
+                resume_match_score=resume_match_score,
+                round_scores_100=round_scores,
+            )
+            final_recommendation = ComprehensiveMetaEvaluatorAgent.recommendation_for(final_score)
+
+            # 检测 LLM 是否填了占位字符串，如果是则用系统生成
+            _PLACEHOLDERS = {'系统自动生成', '系统生成', '由系统填充', '由系统填入', '系统填入'}
+            llm_rationale = (result.get('decision_rationale') or '').strip()
+            if llm_rationale and llm_rationale not in _PLACEHOLDERS:
+                decision_rationale = llm_rationale
+            else:
+                decision_rationale = ComprehensiveMetaEvaluatorAgent.decision_rationale_for(
+                    final_score, round_scores, resume_match_score,
+                )
+
+            # 6. 覆写 LLM 可能误填的字段（防虚高）
+            result['overall_score'] = final_score
+            result['final_recommendation'] = final_recommendation
+            result['decision_rationale'] = decision_rationale
+
+            # 7. 注入 computation 调试字段
+            result['computation'] = {
+                'resume_match_score': resume_match_score,
+                'round_scores': round_scores,
+                'final_score_raw': ComprehensiveMetaEvaluatorAgent.compute_overall_score_raw(
+                    resume_match_score=resume_match_score,
+                    round_scores_100=round_scores,
+                ),
+                'n_rounds': len(round_scores),
+            }
+
+            self._emit(on_progress, 'stage_complete', '',
+                       '综合元评估',
+                       f'综合元评估完成: {final_score}/{final_recommendation}')
+
+            logger.info(f'[综合元评估] 完成: {candidate.name} → '
+                        f'{final_score} 分 / {final_recommendation}')
+            return result
+
+        except Exception as e:
+            logger.error(f'[综合元评估] 失败: {type(e).__name__}: {e}')
+            self._emit(on_progress, 'stage_complete', '',
+                       '综合元评估', f'综合元评估阶段失败: {e}')
+            return None

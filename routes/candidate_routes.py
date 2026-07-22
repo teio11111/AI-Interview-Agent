@@ -1,6 +1,6 @@
 from flask import Blueprint, request
 from models.candidate import Candidate
-from models.interview import InterviewSession
+from models.interview import InterviewSession, InterviewDialog
 from constants import SessionStatus
 from repositories.candidate_repository import CandidateRepository
 from repositories.position_repository import PositionRepository
@@ -118,10 +118,20 @@ def analyze_candidate(id):
 @candidate_bp.route('/<int:id>', methods=['DELETE'])
 @login_required(role='admin')
 def delete_candidate(id):
-    """删除候选人"""
+    """删除候选人（级联删除面试会话和对话记录）"""
     candidate = CandidateRepository.find_by_id(id)
     if not candidate:
         return error('候选人不存在', 404)
+    
+    # 显式级联删除关联的面试会话和对话记录
+    sessions = InterviewRepository.find_sessions_by_candidate(id)
+    for session in sessions:
+        dialogs = InterviewRepository.find_dialogs_by_session(session.id)
+        for dialog in dialogs:
+            from extensions import db
+            db.session.delete(dialog)
+        db.session.delete(session)
+    
     CandidateRepository.delete(candidate)
     return success({'id': id})
 

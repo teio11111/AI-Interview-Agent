@@ -105,12 +105,21 @@ class InterviewerAgent(BaseAgent):
 ### 4. 红旗检测
 综合两位顾问的 red_flags，加上你自己的判断
 
+## ❗ 评分校准标准（严格执行）
+- **9-10分**：准确深入，有具体项目案例和数据支撑，能解释底层原理，表达清晰有条理
+- **7-8分**：基本正确，有一定理解，缺少实践细节
+- **5-6分**：部分正确，表面理解，像“面经”式回答
+- **3-4分**：回答模糊，有明显错误或知识盲区
+- **1-2分**：答非所问或完全不了解
+
+**重要：不要客气，回答差就给低分。大多数普通回答应该在 4-6 分，只有真正优秀的回答才给 7 分以上。**
+
 ## 输出格式（严格 JSON）
 {{
     "evaluation": "2-3句话的综合评估",
-    "score": 7,
+    "score": 5,
     "score_breakdown": {{
-        "accuracy": 7, "depth": 6, "practicality": 8, "logic": 7, "completeness": 6
+        "accuracy": 5, "depth": 4, "practicality": 6, "logic": 5, "completeness": 4
     }},
     "follow_up_questions": [
         "追问1（基于回答中的具体内容）",
@@ -122,8 +131,8 @@ class InterviewerAgent(BaseAgent):
     "should_deep_dive": true,
     "deep_dive_reason": "建议/不建议深挖的原因",
     "consultant_agreement": "两位顾问是否一致，分歧点是什么",
-    "score_tech": 7,
-    "score_soft": 7
+    "score_tech": 5,
+    "score_soft": 5
 }}"""
         return self.think_json(prompt)
 
@@ -154,9 +163,11 @@ class InterviewerAgent(BaseAgent):
 ## 评分标准（1-10分）
 - 9-10：准确深入，有具体项目案例和数据支撑
 - 7-8：基本正确，有一定理解，缺少实践细节
-- 5-6：部分正确，表面理解，像"面经"
+- 5-6：部分正确，表面理解，像“面经”
 - 3-4：回答模糊，有明显错误或知识盲区
 - 1-2：答非所问或完全不了解
+
+**重要：不要客气，回答差就给低分。大多数普通回答应该在 4-6 分，只有真正优秀的回答才给 7 分以上。**
 
 ## 红旗信号检测
 - 回答与简历描述不符
@@ -173,9 +184,9 @@ class InterviewerAgent(BaseAgent):
 ## 输出格式（严格 JSON）
 {{
     "evaluation": "2-3句话的专业评估",
-    "score": 7,
+    "score": 5,
     "score_breakdown": {{
-        "accuracy": 7, "depth": 6, "practicality": 8, "logic": 7, "completeness": 6
+        "accuracy": 5, "depth": 4, "practicality": 6, "logic": 5, "completeness": 4
     }},
     "follow_up_questions": [
         "追问1（基于回答中的具体内容）",

@@ -102,6 +102,22 @@ class InterviewService:
         return orch.generate_follow_up(resume_text, dialog_chain)
 
     @staticmethod
+    def segment_topics(candidate_name, position_name, full_dialogs, on_progress=None):
+        """板块切分（委托给板块切分师 Agent，单Agent）
+
+        Args:
+            candidate_name: 候选人姓名
+            position_name: 岗位名称
+            full_dialogs: 完整对话列表 [{'seq', 'question', 'answer'}]
+            on_progress: 进度回调
+
+        Returns:
+            dict: 板块切分结果（含 topics 列表），失败返回 None
+        """
+        orch = get_orchestrator()
+        return orch.segment_topics(candidate_name, position_name, full_dialogs, on_progress=on_progress)
+
+    @staticmethod
     def generate_report(position, candidate_name, full_dialogs_text,
                         questions_plan=None, on_progress=None):
         """生成本轮面试评价报告（委托给 3+1 多智能体）

@@ -15,16 +15,17 @@ class QuestionCoordinatorAgent(BaseAgent):
 你的核心职责：
 - 接收三位出题官的题目，进行统一审核
 - 去重：相似考察点的题目只保留最好的
-- 质量审核：每道题是否引用简历、是否有追问方向、难度是否合理
+- 质量审核：每道题是否引用简历、是否有追问方向、难度是否合理、**是否包含 answer_directions（2-4 个回答方向关键词）**
 - 难度分布调整：确保 easy/medium/hard 配比合理
 - 最终排序：按考察顺序排列（项目深挖 → 技能验证 → 短板探测 → 场景设计）
 
 工作原则：
 - 总题数控制在 6-8 道
 - 每类题目数量：项目深挖(3) + 技能验证(2) + 短板探测(1-2) + 场景设计(1)
-- 如果某位出题官的题目质量不达标，标注问题并修订
+- 如果某位出题官的题目质量不达标（包括缺少 answer_directions），标注问题并修订
 - 最终题目必须都引用了简历原文
 - 输出格式必须兼容现有面试系统
+- **最终输出必须保留每道题的 answer_directions 字段**
 
 请始终以严格的 JSON 格式输出，不要输出任何解释性文字。"""
 
@@ -83,7 +84,11 @@ class QuestionCoordinatorAgent(BaseAgent):
 - medium: 3-4道（核心考察）
 - hard: 1-2道（探测上限）
 
-### 4. 最终排序
+### 4. 回答方向关键词（answer_directions）检查（必查）
+- 每道题必须包含 answer_directions 字段（2-4 个回答关键词/方向）
+- 若缺失，请在最终输出中补上（基于题目内容推断）
+
+### 5. 最终排序
 项目深挖 → 技能验证 → 短板探测 → 场景设计
 
 ## 输出格式（严格 JSON，6-8道题）
@@ -98,7 +103,8 @@ class QuestionCoordinatorAgent(BaseAgent):
             "expected_depth": "合格回答标准",
             "follow_up_hints": ["追问方向1", "追问方向2"],
             "source": "来源出题官",
-            "modified": false
+            "modified": false,
+            "answer_directions": ["回答关键词/方向1", "回答关键词/方向2", "回答关键词/方向3", "回答关键词/方向4"]
         }}
     ],
     "review_log": {{
@@ -108,7 +114,8 @@ class QuestionCoordinatorAgent(BaseAgent):
             {{"question_index": 1, "source": "来源", "reason": "去掉原因"}}
         ],
         "difficulty_distribution": {{"easy": 2, "medium": 3, "hard": 2}},
-        "quality_notes": "整体质量评价"
+        "quality_notes": "整体质量评价",
+        "missing_directions": "记录缺失 answer_directions 的题号，提示出题官补充"
     }},
     "approved": true
 }}"""
