@@ -218,6 +218,7 @@
                             <li><span class="dropdown-item-text text-muted small">{{ '管理员' if current_user.role == 'admin' else '候选人' }}</span></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal"><i class="bi bi-key me-1"></i>修改密码</a></li>
+                            <li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#changeUsernameModal"><i class="bi bi-person-badge me-1"></i>修改用户名</a></li>
                             <li><a class="dropdown-item" href="#" onclick="doLogout()"><i class="bi bi-box-arrow-right me-1"></i>退出登录</a></li>
                         </ul>
                     </li>
@@ -682,6 +683,65 @@
         }
         function showPwdMsg(text, type) {
             const msg = document.getElementById('pwdMsg');
+            msg.textContent = text;
+            msg.className = 'small mb-2 alert alert-' + type + ' py-1';
+            msg.style.display = 'block';
+        }
+    </script>
+
+    <!-- 【v3.1】修改用户名弹窗 -->
+    <div class="modal fade" id="changeUsernameModal" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h6 class="modal-title"><i class="bi bi-person-badge me-1"></i>修改用户名</h6>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label small">新用户名（2-30字符）</label>
+                        <input type="text" class="form-control" id="newUsername" autocomplete="username">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small">确认密码</label>
+                        <input type="password" class="form-control" id="usernamePwd" autocomplete="current-password">
+                    </div>
+                    <div id="usernameMsg" class="small mb-2" style="display:none"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                    <button class="btn btn-primary btn-sm" onclick="submitChangeUsername()">确认修改</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        async function submitChangeUsername() {
+            const newUsername = document.getElementById('newUsername').value.trim();
+            const password = document.getElementById('usernamePwd').value;
+
+            if (!newUsername || !password) { showUsernameMsg('请填写新用户名和密码', 'danger'); return; }
+            if (newUsername.length < 2) { showUsernameMsg('用户名至少 2 个字符', 'danger'); return; }
+
+            try {
+                const resp = await fetch('/api/auth/change-username', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_username: newUsername, password: password })
+                });
+                const data = await resp.json();
+                if (data.code === 0 || data.code === 200) {
+                    showUsernameMsg('用户名修改成功！即将刷新页面…', 'success');
+                    setTimeout(() => { window.location.reload(); }, 1200);
+                } else {
+                    showUsernameMsg(data.msg || '修改失败', 'danger');
+                }
+            } catch (e) {
+                showUsernameMsg('网络错误: ' + e.message, 'danger');
+            }
+        }
+        function showUsernameMsg(text, type) {
+            const msg = document.getElementById('usernameMsg');
             msg.textContent = text;
             msg.className = 'small mb-2 alert alert-' + type + ' py-1';
             msg.style.display = 'block';

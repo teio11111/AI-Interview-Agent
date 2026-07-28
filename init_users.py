@@ -10,11 +10,11 @@ from extensions import db
 
 # 要创建的账号列表（可自定义）
 USERS = [
-    {'username': 'steve',    'password': '123456', 'role': 'admin'},
-    {'username': 'zhangsan', 'password': '123456', 'role': 'admin'},
-    {'username': 'lisi',     'password': '123456', 'role': 'admin'},
-    {'username': 'wangwu',   'password': '123456', 'role': 'admin'},
-    {'username': 'zhaoliu',  'password': '123456', 'role': 'admin'},
+    {'username': 'admin1', 'password': '123456', 'role': 'admin'},
+    {'username': 'admin2', 'password': '123456', 'role': 'admin'},
+    {'username': 'admin3', 'password': '123456', 'role': 'admin'},
+    {'username': 'admin4', 'password': '123456', 'role': 'admin'},
+    {'username': 'admin5', 'password': '123456', 'role': 'admin'},
 ]
 
 app = create_app()
