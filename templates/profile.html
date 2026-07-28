@@ -4,7 +4,7 @@
 <div class="row mb-4">
     <div class="col">
         <h4 class="mb-1"><i class="bi bi-clock-history me-2"></i>操作动态</h4>
-        <p class="text-muted small mb-0">记录系统中所有人的操作历史，包括登录、创建、分析、面试、删除等</p>
+        <p class="text-muted small mb-0">记录账号登录、改密改名、以及面试官的面试记录（给谁弄了第几次面试）</p>
     </div>
 </div>
 
@@ -13,34 +13,31 @@
     <div class="card-body py-2">
         <div class="row g-2 align-items-center">
             <div class="col-auto">
-                <select id="filterUser" class="form-select form-select-sm" style="width:140px">
+                <label class="small text-muted me-1">用户</label>
+                <select id="filterUser" class="form-select form-select-sm" style="width:140px" onchange="loadLogs(1)">
                     <option value="">所有人</option>
                 </select>
             </div>
             <div class="col-auto">
-                <select id="filterAction" class="form-select form-select-sm" style="width:140px">
+                <label class="small text-muted me-1">操作</label>
+                <select id="filterAction" class="form-select form-select-sm" style="width:140px" onchange="loadLogs(1)">
                     <option value="">全部操作</option>
                     <option value="login">登录</option>
                     <option value="logout">登出</option>
-                    <option value="create">创建</option>
-                    <option value="delete">删除</option>
-                    <option value="analyze">AI分析</option>
-                    <option value="finish_interview">结束面试</option>
+                    <option value="create">面试开始</option>
                     <option value="change_password">修改密码</option>
                     <option value="change_username">修改用户名</option>
                 </select>
             </div>
             <div class="col-auto">
-                <select id="filterTarget" class="form-select form-select-sm" style="width:140px">
+                <label class="small text-muted me-1">对象</label>
+                <select id="filterTarget" class="form-select form-select-sm" style="width:140px" onchange="loadLogs(1)">
                     <option value="">全部对象</option>
-                    <option value="candidate">候选人</option>
-                    <option value="position">岗位</option>
-                    <option value="interview_session">面试会话</option>
                     <option value="user">用户</option>
+                    <option value="interview_session">面试会话</option>
                 </select>
             </div>
-            <div class="col-auto">
-                <button class="btn btn-primary btn-sm" onclick="loadLogs(1)"><i class="bi bi-search me-1"></i>筛选</button>
+            <div class="col-auto ms-auto">
                 <button class="btn btn-outline-secondary btn-sm" onclick="resetFilters()"><i class="bi bi-arrow-counterclockwise me-1"></i>重置</button>
             </div>
         </div>
@@ -67,23 +64,18 @@
 let currentPage = 1;
 let totalPages = 1;
 
-// 操作类型映射
+// 操作类型映射（与后端 log_operation 第一个参数保持一致）
 const ACTION_MAP = {
-    login:              { label: '登录',     icon: 'bi-box-arrow-in-right',  color: 'success' },
-    logout:             { label: '登出',     icon: 'bi-box-arrow-left',      color: 'secondary' },
-    create:             { label: '创建',     icon: 'bi-plus-circle',         color: 'primary' },
-    delete:             { label: '删除',     icon: 'bi-trash',               color: 'danger' },
-    analyze:            { label: 'AI分析',   icon: 'bi-robot',               color: 'info' },
-    finish_interview:   { label: '结束面试', icon: 'bi-check-circle',        color: 'success' },
-    change_password:    { label: '改密码',   icon: 'bi-key',                 color: 'warning' },
-    change_username:    { label: '改名',     icon: 'bi-person-badge',        color: 'warning' },
+    login:           { label: '登录',   icon: 'bi-box-arrow-in-right', color: 'success' },
+    logout:          { label: '登出',   icon: 'bi-box-arrow-left',     color: 'secondary' },
+    create:          { label: '面试开始', icon: 'bi-play-circle',      color: 'primary' },
+    change_password: { label: '改密码', icon: 'bi-key',                color: 'warning' },
+    change_username: { label: '改名',   icon: 'bi-person-badge',       color: 'warning' },
 };
 
 const TARGET_MAP = {
-    candidate:        '候选人',
-    position:         '岗位',
-    interview_session:'面试会话',
     user:             '用户',
+    interview_session:'面试会话',
 };
 
 function actionBadge(action) {
@@ -121,7 +113,7 @@ function renderLogs(logs) {
 }
 
 async function loadLogs(page) {
-    if (page < 1 || page > totalPages) return;
+    if (page < 1) return;
     currentPage = page;
 
     const params = new URLSearchParams({ page, per_page: 50 });
@@ -141,6 +133,7 @@ async function loadLogs(page) {
 
         renderLogs(result.logs || []);
         totalPages = result.pages || 1;
+        if (currentPage > totalPages) currentPage = totalPages;
 
         document.getElementById('pageInfo').textContent = `第 ${currentPage} / ${totalPages} 页，共 ${result.total || 0} 条`;
         document.getElementById('prevBtn').disabled = currentPage <= 1;

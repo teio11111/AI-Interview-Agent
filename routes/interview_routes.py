@@ -40,6 +40,16 @@ def generate_questions(candidate_id):
             questions_plan=json.dumps(result, ensure_ascii=False)
         )
         InterviewRepository.save_session(session)
+        # 记录这是该候选人的第几次面试
+        try:
+            prior_count = InterviewRepository.count_sessions_by_candidate(candidate_id)
+        except Exception:
+            prior_count = 0
+        nth = prior_count + 1  # +1 包含本次刚创建的会话
+        log_operation(
+            'create', 'interview_session', session.id, candidate.name,
+            f'第 {nth} 次面试'
+        )
         return success({'session': session.to_dict(), 'questions': result})
     else:
         return error('生成面试问题失败', 502)
@@ -65,11 +75,7 @@ def delete_session(session_id):
     session = InterviewRepository.find_session_by_id(session_id)
     if not session:
         return error('面试会话不存在', 404)
-    # 获取候选人名称用于审计
-    candidate = CandidateRepository.find_by_id(session.candidate_id)
-    target_name = candidate.name if candidate else f'session#{session_id}'
     InterviewRepository.delete_session(session)
-    log_operation('delete', 'interview_session', session_id, target_name)
     return success({'id': session_id})
 
 
@@ -197,8 +203,6 @@ def finish_interview(session_id):
             report['topics'] = [t.to_dict() for t in saved_topics]
         session.report = json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else report
         InterviewRepository.update_session(session)
-        log_operation('finish_interview', 'candidate', candidate.id, candidate.name,
-                      f'会话#{session_id}, 板块{len(saved_topics)}个, 对话{len(dialogs)}轮')
         return success({'report': report})
     else:
         return error('生成评价报告失败', 502)

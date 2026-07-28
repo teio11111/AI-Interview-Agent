@@ -14,6 +14,11 @@ class InterviewRepository:
         return InterviewSession.query.filter_by(candidate_id=candidate_id).all()
 
     @staticmethod
+    def count_sessions_by_candidate(candidate_id):
+        """统计某候选人的面试会话总数（用于审计'第N次面试'）"""
+        return InterviewSession.query.filter_by(candidate_id=candidate_id).count()
+
+    @staticmethod
     def find_all_sessions():
         return InterviewSession.query.order_by(InterviewSession.created_at.desc()).all()
 

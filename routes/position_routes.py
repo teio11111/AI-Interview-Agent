@@ -39,7 +39,6 @@ def create_position():
         tech_requirements=data.get('tech_requirements', '')
     )
     PositionRepository.save(position)
-    log_operation('create', 'position', position.id, position.name)
     return created(position.to_dict())
 
 
@@ -70,7 +69,6 @@ def delete_position(id):
         return error('岗位不存在', 404)
     name = position.name
     PositionRepository.delete(position)
-    log_operation('delete', 'position', id, name)
     return success(message='岗位已删除')
 
 
@@ -92,7 +90,6 @@ def analyze_position(id):
         import json
         position.ai_analysis = json.dumps(result, ensure_ascii=False)
         PositionRepository.update(position)
-        log_operation('analyze', 'position', position.id, position.name)
         return success({'analysis': result, 'position': position.to_dict()})
     else:
         return error('AI 分析失败，请重试', 502)
