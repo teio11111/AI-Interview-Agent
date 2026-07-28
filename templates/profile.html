@@ -4,11 +4,11 @@
 <div class="row mb-4">
     <div class="col">
         <h4 class="mb-1"><i class="bi bi-clock-history me-2"></i>操作动态</h4>
-        <p class="text-muted small mb-0">记录账号登录、改密改名、以及面试官的面试记录（给谁弄了第几次面试）</p>
+        <p class="text-muted small mb-0">记录账号登录、改密改名、以及面试官的面试记录（创建/结束/删除面试，标注第几轮）</p>
     </div>
 </div>
 
-<!-- 筛选栏：按"对象·操作"两级分组单下拉 -->
+<!-- 筛选栏：两级联动下拉（对象大类 → 子操作） -->
 <div class="card mb-3">
     <div class="card-body py-2">
         <div class="row g-2 align-items-center">
@@ -19,18 +19,19 @@
                 </select>
             </div>
             <div class="col-auto">
-                <label class="small text-muted me-1">记录类型</label>
-                <select id="filterCategory" class="form-select form-select-sm" style="width:200px" onchange="loadLogs(1)">
-                    <option value="">全部记录</option>
-                    <optgroup label="账户">
-                        <option value="login|user">登录</option>
-                        <option value="logout|user">登出</option>
-                        <option value="change_password|user">改密码</option>
-                        <option value="change_username|user">改名</option>
-                    </optgroup>
-                    <optgroup label="面试">
-                        <option value="create|interview_session">面试开始</option>
-                    </optgroup>
+                <label class="small text-muted me-1">对象</label>
+                <select id="filterCategory" class="form-select form-select-sm" style="width:140px" onchange="onCategoryChange()">
+                    <option value="">全部对象</option>
+                    <option value="user">账户</option>
+                    <option value="interview_session">面试</option>
+                    <option value="position">岗位</option>
+                    <option value="candidate">候选人</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <label class="small text-muted me-1">操作</label>
+                <select id="filterAction" class="form-select form-select-sm" style="width:140px" onchange="loadLogs(1)">
+                    <option value="">全部操作</option>
                 </select>
             </div>
             <div class="col-auto ms-auto">
@@ -60,18 +61,48 @@
 let currentPage = 1;
 let totalPages = 1;
 
+// 各类对象对应的子操作（key = target_type）
+const SUB_ACTIONS = {
+    user: [
+        { action: 'login',           label: '登录' },
+        { action: 'logout',          label: '登出' },
+        { action: 'change_password', label: '改密码' },
+        { action: 'change_username', label: '改名' },
+    ],
+    interview_session: [
+        { action: 'create',           label: '创建' },
+        { action: 'finish_interview', label: '结束面试' },
+        { action: 'delete',           label: '删除' },
+    ],
+    position: [
+        { action: 'create',  label: '创建' },
+        { action: 'delete',  label: '删除' },
+        { action: 'analyze', label: 'AI分析' },
+    ],
+    candidate: [
+        { action: 'create',  label: '创建' },
+        { action: 'delete',  label: '删除' },
+        { action: 'analyze', label: 'AI分析' },
+    ],
+};
+
 // 操作类型映射（与后端 log_operation 第一个参数保持一致）
 const ACTION_MAP = {
-    login:           { label: '登录',   icon: 'bi-box-arrow-in-right', color: 'success' },
-    logout:          { label: '登出',   icon: 'bi-box-arrow-left',     color: 'secondary' },
-    create:          { label: '面试开始', icon: 'bi-play-circle',      color: 'primary' },
-    change_password: { label: '改密码', icon: 'bi-key',                color: 'warning' },
-    change_username: { label: '改名',   icon: 'bi-person-badge',       color: 'warning' },
+    login:            { label: '登录',     icon: 'bi-box-arrow-in-right', color: 'success' },
+    logout:           { label: '登出',     icon: 'bi-box-arrow-left',     color: 'secondary' },
+    create:           { label: '创建',     icon: 'bi-plus-circle',        color: 'primary' },
+    finish_interview: { label: '结束面试', icon: 'bi-check-circle',       color: 'success' },
+    delete:           { label: '删除',     icon: 'bi-trash',               color: 'danger' },
+    analyze:          { label: 'AI分析',   icon: 'bi-robot',               color: 'info' },
+    change_password:  { label: '改密码',   icon: 'bi-key',                 color: 'warning' },
+    change_username:  { label: '改名',     icon: 'bi-person-badge',       color: 'warning' },
 };
 
 const TARGET_MAP = {
     user:             '用户',
     interview_session:'面试会话',
+    candidate:        '候选人',
+    position:         '岗位',
 };
 
 function actionBadge(action) {
@@ -114,14 +145,11 @@ async function loadLogs(page) {
 
     const params = new URLSearchParams({ page, per_page: 50 });
     const userId = document.getElementById('filterUser').value;
-    // 解析 "action|target_type" 格式的复合值
-    const category = document.getElementById('filterCategory').value;
+    const targetType = document.getElementById('filterCategory').value;
+    const action = document.getElementById('filterAction').value;
     if (userId) params.set('user_id', userId);
-    if (category) {
-        const [action, targetType] = category.split('|');
-        if (action) params.set('action', action);
-        if (targetType) params.set('target_type', targetType);
-    }
+    if (targetType) params.set('target_type', targetType);
+    if (action) params.set('action', action);
 
     document.getElementById('logList').innerHTML = '<div class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2"></div>加载中...</div>';
 
@@ -158,9 +186,26 @@ async function loadUsers() {
     } catch (e) { /* ignore */ }
 }
 
+// 对象大类变化时，重置子操作下拉
+function onCategoryChange() {
+    const cat = document.getElementById('filterCategory').value;
+    const sel = document.getElementById('filterAction');
+    sel.innerHTML = '<option value="">全部操作</option>';
+    if (cat && SUB_ACTIONS[cat]) {
+        for (const item of SUB_ACTIONS[cat]) {
+            const opt = document.createElement('option');
+            opt.value = item.action;
+            opt.textContent = item.label;
+            sel.appendChild(opt);
+        }
+    }
+    loadLogs(1);
+}
+
 function resetFilters() {
     document.getElementById('filterUser').value = '';
     document.getElementById('filterCategory').value = '';
+    document.getElementById('filterAction').innerHTML = '<option value="">全部操作</option>';
     loadLogs(1);
 }
 
