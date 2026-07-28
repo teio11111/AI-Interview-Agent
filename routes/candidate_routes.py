@@ -12,6 +12,7 @@ from utils.pdf_parser import extract_text_from_pdf
 from utils.response import success, error, created
 from utils.logger import logger
 from utils.auth import login_required
+from utils.audit import log_operation
 from utils.meta_evaluation_pdf import generate_meta_evaluation_pdf
 import json
 import threading
@@ -52,6 +53,7 @@ def create_candidate():
         resume_text=data.get('resume_text', '')
     )
     CandidateRepository.save(candidate)
+    log_operation('create', 'candidate', candidate.id, candidate.name, f'岗位: {position.name}')
     return created(candidate.to_dict())
 
 
@@ -108,6 +110,7 @@ def analyze_candidate(id):
     candidate.ai_analysis = json.dumps(result, ensure_ascii=False)
     candidate.match_score = 0 if is_llm_failed else result.get('match_score', 0)
     CandidateRepository.update(candidate)
+    log_operation('analyze', 'candidate', candidate.id, candidate.name, f'匹配分: {candidate.match_score}')
 
     # 2. 【v3.6.5 同步保险】同步调用 LLM 真出题（超时 90s），保证返回时 session 一定带上定制题，
     #    不再依赖不可靠的 daemon Thread（waitress 8 worker 下 daemon thread 时灵时不灵，导致
@@ -237,7 +240,9 @@ def delete_candidate(id):
         db.session.delete(session)
     db.session.commit()
     
+    name = candidate.name
     CandidateRepository.delete(candidate)
+    log_operation('delete', 'candidate', id, name)
     return success({'id': id})
 
 
@@ -268,6 +273,7 @@ def batch_delete():
     for cid in ids:
         candidate = CandidateRepository.find_by_id(cid)
         if candidate:
+            log_operation('delete', 'candidate', cid, candidate.name, '批量删除')
             CandidateRepository.delete(candidate)
             deleted.append(cid)
     return success({'deleted': deleted, 'count': len(deleted)})

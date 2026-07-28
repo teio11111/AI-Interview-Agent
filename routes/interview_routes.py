@@ -8,6 +8,7 @@ from services.interview_service import InterviewService
 from utils.response import success, error
 from utils.logger import logger
 from utils.auth import login_required
+from utils.audit import log_operation
 import json
 
 interview_bp = Blueprint('interviews', __name__, url_prefix='/api/interviews')
@@ -64,7 +65,11 @@ def delete_session(session_id):
     session = InterviewRepository.find_session_by_id(session_id)
     if not session:
         return error('面试会话不存在', 404)
+    # 获取候选人名称用于审计
+    candidate = CandidateRepository.find_by_id(session.candidate_id)
+    target_name = candidate.name if candidate else f'session#{session_id}'
     InterviewRepository.delete_session(session)
+    log_operation('delete', 'interview_session', session_id, target_name)
     return success({'id': session_id})
 
 
@@ -192,6 +197,8 @@ def finish_interview(session_id):
             report['topics'] = [t.to_dict() for t in saved_topics]
         session.report = json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else report
         InterviewRepository.update_session(session)
+        log_operation('finish_interview', 'candidate', candidate.id, candidate.name,
+                      f'会话#{session_id}, 板块{len(saved_topics)}个, 对话{len(dialogs)}轮')
         return success({'report': report})
     else:
         return error('生成评价报告失败', 502)

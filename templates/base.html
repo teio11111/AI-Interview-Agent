@@ -202,6 +202,11 @@
                             <i class="bi bi-chat-dots"></i> 面试工作台
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'audit.profile_page' %}active{% endif %}" href="/profile">
+                            <i class="bi bi-clock-history"></i> 动态
+                        </a>
+                    </li>
                     {# 【隐藏】候选人门户导航入口（管理员后台不再需要） #}
                     {% endif %}
                     {% if current_user %}
@@ -212,6 +217,7 @@
                         <ul class="dropdown-menu dropdown-menu-end">
                             <li><span class="dropdown-item-text text-muted small">{{ '管理员' if current_user.role == 'admin' else '候选人' }}</span></li>
                             <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal"><i class="bi bi-key me-1"></i>修改密码</a></li>
                             <li><a class="dropdown-item" href="#" onclick="doLogout()"><i class="bi bi-box-arrow-right me-1"></i>退出登录</a></li>
                         </ul>
                     </li>
@@ -607,6 +613,78 @@
         async function doLogout() {
             await fetch('/api/auth/logout', { method: 'POST' });
             window.location.href = '/login';
+        }
+    </script>
+
+    <!-- 【v3.1】修改密码弹窗 -->
+    <div class="modal fade" id="changePasswordModal" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h6 class="modal-title"><i class="bi bi-key me-1"></i>修改密码</h6>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label small">旧密码</label>
+                        <input type="password" class="form-control" id="oldPwd" autocomplete="current-password">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small">新密码（至少6位）</label>
+                        <input type="password" class="form-control" id="newPwd" autocomplete="new-password">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small">确认新密码</label>
+                        <input type="password" class="form-control" id="confirmPwd" autocomplete="new-password">
+                    </div>
+                    <div id="pwdMsg" class="small mb-2" style="display:none"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                    <button class="btn btn-primary btn-sm" onclick="submitChangePassword()">确认修改</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        async function submitChangePassword() {
+            const oldPwd = document.getElementById('oldPwd').value;
+            const newPwd = document.getElementById('newPwd').value;
+            const confirmPwd = document.getElementById('confirmPwd').value;
+            const msg = document.getElementById('pwdMsg');
+            msg.style.display = 'none';
+
+            if (!oldPwd || !newPwd) { showPwdMsg('请填写旧密码和新密码', 'danger'); return; }
+            if (newPwd.length < 6) { showPwdMsg('新密码至少 6 位', 'danger'); return; }
+            if (newPwd !== confirmPwd) { showPwdMsg('两次输入的密码不一致', 'danger'); return; }
+
+            try {
+                const resp = await fetch('/api/auth/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_password: oldPwd, new_password: newPwd })
+                });
+                const data = await resp.json();
+                if (data.code === 0 || data.code === 200) {
+                    showPwdMsg('密码修改成功！', 'success');
+                    setTimeout(() => {
+                        bootstrap.Modal.getInstance(document.getElementById('changePasswordModal')).hide();
+                        document.getElementById('oldPwd').value = '';
+                        document.getElementById('newPwd').value = '';
+                        document.getElementById('confirmPwd').value = '';
+                    }, 800);
+                } else {
+                    showPwdMsg(data.msg || '修改失败', 'danger');
+                }
+            } catch (e) {
+                showPwdMsg('网络错误: ' + e.message, 'danger');
+            }
+        }
+        function showPwdMsg(text, type) {
+            const msg = document.getElementById('pwdMsg');
+            msg.textContent = text;
+            msg.className = 'small mb-2 alert alert-' + type + ' py-1';
+            msg.style.display = 'block';
         }
     </script>
     {% block extra_js %}{% endblock %}

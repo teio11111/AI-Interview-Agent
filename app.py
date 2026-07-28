@@ -25,6 +25,7 @@ def create_app():
     from routes.candidate_portal_routes import candidate_portal_bp
     from routes.stream_routes import stream_bp
     from routes.asr_routes import asr_bp
+    from routes.audit_routes import audit_bp
     app.register_blueprint(auth_bp)
     app.register_blueprint(home_bp)
     app.register_blueprint(position_bp)
@@ -33,10 +34,11 @@ def create_app():
     app.register_blueprint(candidate_portal_bp)
     app.register_blueprint(stream_bp)
     app.register_blueprint(asr_bp)
+    app.register_blueprint(audit_bp)
 
     # 导入所有模型并创建表
     with app.app_context():
-        from models import position, candidate, interview, user  # noqa: F401
+        from models import position, candidate, interview, user, operation_log  # noqa: F401
         db.create_all()
 
     # 模板上下文：注入当前用户

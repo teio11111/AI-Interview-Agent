@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}操作动态 - AI Interview Agent{% endblock %}
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h4 class="mb-1"><i class="bi bi-clock-history me-2"></i>操作动态</h4>
+        <p class="text-muted small mb-0">记录系统中所有人的操作历史，包括登录、创建、分析、面试、删除等</p>
+    </div>
+</div>
+
+<!-- 筛选栏 -->
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <div class="row g-2 align-items-center">
+            <div class="col-auto">
+                <select id="filterUser" class="form-select form-select-sm" style="width:140px">
+                    <option value="">所有人</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <select id="filterAction" class="form-select form-select-sm" style="width:140px">
+                    <option value="">全部操作</option>
+                    <option value="login">登录</option>
+                    <option value="logout">登出</option>
+                    <option value="create">创建</option>
+                    <option value="delete">删除</option>
+                    <option value="analyze">AI分析</option>
+                    <option value="finish_interview">结束面试</option>
+                    <option value="change_password">修改密码</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <select id="filterTarget" class="form-select form-select-sm" style="width:140px">
+                    <option value="">全部对象</option>
+                    <option value="candidate">候选人</option>
+                    <option value="position">岗位</option>
+                    <option value="interview_session">面试会话</option>
+                    <option value="user">用户</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <button class="btn btn-primary btn-sm" onclick="loadLogs(1)"><i class="bi bi-search me-1"></i>筛选</button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="resetFilters()"><i class="bi bi-arrow-counterclockwise me-1"></i>重置</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 日志列表 -->
+<div id="logList" class="list-group mb-3">
+    <div class="text-center py-5 text-muted">
+        <div class="spinner-border spinner-border-sm me-2"></div>加载中...
+    </div>
+</div>
+
+<!-- 分页 -->
+<nav id="pagination" class="d-flex justify-content-between align-items-center" style="display:none!important">
+    <small class="text-muted" id="pageInfo"></small>
+    <div>
+        <button class="btn btn-outline-secondary btn-sm" id="prevBtn" onclick="loadLogs(currentPage-1)">上一页</button>
+        <button class="btn btn-outline-secondary btn-sm" id="nextBtn" onclick="loadLogs(currentPage+1)">下一页</button>
+    </div>
+</nav>
+
+<script>
+let currentPage = 1;
+let totalPages = 1;
+
+// 操作类型映射
+const ACTION_MAP = {
+    login:              { label: '登录',     icon: 'bi-box-arrow-in-right',  color: 'success' },
+    logout:             { label: '登出',     icon: 'bi-box-arrow-left',      color: 'secondary' },
+    create:             { label: '创建',     icon: 'bi-plus-circle',         color: 'primary' },
+    delete:             { label: '删除',     icon: 'bi-trash',               color: 'danger' },
+    analyze:            { label: 'AI分析',   icon: 'bi-robot',               color: 'info' },
+    finish_interview:   { label: '结束面试', icon: 'bi-check-circle',        color: 'success' },
+    change_password:    { label: '改密码',   icon: 'bi-key',                 color: 'warning' },
+};
+
+const TARGET_MAP = {
+    candidate:        '候选人',
+    position:         '岗位',
+    interview_session:'面试会话',
+    user:             '用户',
+};
+
+function actionBadge(action) {
+    const m = ACTION_MAP[action] || { label: action, icon: 'bi-activity', color: 'secondary' };
+    return `<span class="badge bg-${m.color}"><i class="bi ${m.icon} me-1"></i>${m.label}</span>`;
+}
+
+function targetLabel(log) {
+    const t = TARGET_MAP[log.target_type] || log.target_type || '';
+    const name = log.target_name || '';
+    if (t && name) return `${t}「${name}」`;
+    if (name) return `「${name}」`;
+    return t;
+}
+
+function renderLogs(logs) {
+    const el = document.getElementById('logList');
+    if (!logs.length) {
+        el.innerHTML = '<div class="text-center py-5 text-muted"><i class="bi bi-inbox me-2"></i>暂无操作记录</div>';
+        return;
+    }
+    el.innerHTML = logs.map(log => `
+        <div class="list-group-item d-flex align-items-start gap-2 py-2 px-3">
+            <div class="flex-shrink-0 mt-1">${actionBadge(log.action)}</div>
+            <div class="flex-grow-1">
+                <div>
+                    <strong>${log.username}</strong>
+                    <span class="text-muted">${targetLabel(log)}</span>
+                </div>
+                ${log.detail ? `<div class="small text-muted mt-1">${log.detail}</div>` : ''}
+            </div>
+            <div class="flex-shrink-0 text-muted small">${log.created_at || ''}</div>
+        </div>
+    `).join('');
+}
+
+async function loadLogs(page) {
+    if (page < 1 || page > totalPages) return;
+    currentPage = page;
+
+    const params = new URLSearchParams({ page, per_page: 50 });
+    const userId = document.getElementById('filterUser').value;
+    const action = document.getElementById('filterAction').value;
+    const target = document.getElementById('filterTarget').value;
+    if (userId) params.set('user_id', userId);
+    if (action) params.set('action', action);
+    if (target) params.set('target_type', target);
+
+    document.getElementById('logList').innerHTML = '<div class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2"></div>加载中...</div>';
+
+    try {
+        const resp = await fetch('/api/audit/logs?' + params.toString());
+        const data = await resp.json();
+        const result = data.data || {};
+
+        renderLogs(result.logs || []);
+        totalPages = result.pages || 1;
+
+        document.getElementById('pageInfo').textContent = `第 ${currentPage} / ${totalPages} 页，共 ${result.total || 0} 条`;
+        document.getElementById('prevBtn').disabled = currentPage <= 1;
+        document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+        document.getElementById('pagination').style.display = (result.total > 0) ? '' : 'none';
+        document.getElementById('pagination').style.setProperty('display', (result.total > 0) ? '' : 'none', 'important');
+    } catch (e) {
+        document.getElementById('logList').innerHTML = `<div class="text-center py-4 text-danger">加载失败: ${e.message}</div>`;
+    }
+}
+
+async function loadUsers() {
+    try {
+        const resp = await fetch('/api/audit/users');
+        const data = await resp.json();
+        const sel = document.getElementById('filterUser');
+        (data.data || []).forEach(u => {
+            const opt = document.createElement('option');
+            opt.value = u.id;
+            opt.textContent = u.username;
+            sel.appendChild(opt);
+        });
+    } catch (e) { /* ignore */ }
+}
+
+function resetFilters() {
+    document.getElementById('filterUser').value = '';
+    document.getElementById('filterAction').value = '';
+    document.getElementById('filterTarget').value = '';
+    loadLogs(1);
+}
+
+// 初始化
+loadUsers();
+loadLogs(1);
+</script>
+{% endblock %}

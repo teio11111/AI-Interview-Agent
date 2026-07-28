@@ -1,8 +1,9 @@
 from flask import Blueprint, request, session, render_template, redirect, url_for
 from models.user import User
-from utils.auth import hash_password, verify_password
+from utils.auth import hash_password, verify_password, login_required
 from utils.response import success, error
 from utils.logger import logger
+from utils.audit import log_operation
 from extensions import db
 
 auth_bp = Blueprint('auth', __name__)
@@ -42,6 +43,7 @@ def login():
     session['user_id'] = user.id
     session['user_role'] = user.role
     logger.info(f'用户 {user.username} 登录成功 (role={user.role})')
+    log_operation('login', 'user', user.id, user.username)
 
     redirect_url = '/' if user.role == 'admin' else '/candidate'
     return success({'user': user.to_dict(), 'redirect': redirect_url})
@@ -57,6 +59,12 @@ def register():
 @auth_bp.route('/api/auth/logout', methods=['POST'])
 def logout():
     """登出"""
+    # 在清除 session 前记录审计
+    user_id = session.get('user_id')
+    if user_id:
+        user = db.session.get(User, user_id)
+        if user:
+            log_operation('logout', 'user', user.id, user.username)
     session.clear()
     return success(message='已登出')
 
@@ -72,3 +80,33 @@ def me():
         session.clear()
         return error('用户不存在', 401)
     return success(user.to_dict())
+
+
+@auth_bp.route('/api/auth/change-password', methods=['POST'])
+@login_required()
+def change_password():
+    """修改密码"""
+    data = request.get_json()
+    if not data:
+        return error('请求体不能为空', 400)
+
+    old_password = data.get('old_password', '')
+    new_password = data.get('new_password', '')
+
+    if not old_password or not new_password:
+        return error('旧密码和新密码不能为空', 400)
+    if len(new_password) < 6:
+        return error('新密码至少 6 位', 400)
+
+    user = db.session.get(User, session['user_id'])
+    if not user:
+        return error('用户不存在', 404)
+
+    if not verify_password(user.password_hash, old_password):
+        return error('旧密码不正确', 400)
+
+    user.password_hash = hash_password(new_password)
+    db.session.commit()
+    log_operation('change_password', 'user', user.id, user.username)
+    logger.info(f'用户 {user.username} 修改密码成功')
+    return success(message='密码修改成功')

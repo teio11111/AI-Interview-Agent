@@ -4,6 +4,7 @@ from repositories.position_repository import PositionRepository
 from utils.response import success, error, created
 from utils.logger import logger
 from utils.auth import login_required
+from utils.audit import log_operation
 from utils.pdf_parser import extract_text_from_pdf
 
 position_bp = Blueprint('positions', __name__, url_prefix='/api/positions')
@@ -38,6 +39,7 @@ def create_position():
         tech_requirements=data.get('tech_requirements', '')
     )
     PositionRepository.save(position)
+    log_operation('create', 'position', position.id, position.name)
     return created(position.to_dict())
 
 
@@ -66,7 +68,9 @@ def delete_position(id):
     position = PositionRepository.find_by_id(id)
     if not position:
         return error('岗位不存在', 404)
+    name = position.name
     PositionRepository.delete(position)
+    log_operation('delete', 'position', id, name)
     return success(message='岗位已删除')
 
 
@@ -88,6 +92,7 @@ def analyze_position(id):
         import json
         position.ai_analysis = json.dumps(result, ensure_ascii=False)
         PositionRepository.update(position)
+        log_operation('analyze', 'position', position.id, position.name)
         return success({'analysis': result, 'position': position.to_dict()})
     else:
         return error('AI 分析失败，请重试', 502)
