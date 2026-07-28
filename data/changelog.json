@@ -2,6 +2,27 @@
   "_comment": "更新日志数据。重大版本（v1.x、v2.x 等）单独写 Word 文档配套发布，本文件仅展示用户可感知的最近改动。新增条目时请在头部添加。",
   "versions": [
     {
+      "version": "v3.0",
+      "date": "2026-07-28",
+      "title": "SSE 路径兜底题修复 + 评分逻辑重构 + 隐性维度异步评估",
+      "tag": "重大更新",
+      "tag_color": "success",
+      "items": [
+        "【P0】修复 SSE 流式接口\"新人第一次面试恢复兜底题\"缺陷：前端走的是 SSE 路径，前端代码只创建兜底 session 不触发 LLM 真出题，现在改为同步保险（拿到 LLM 定制题才创建 session）",
+        "【P1】修复添加候选人简历数据串位 bug：手动粘贴简历会被上次的 PDF 默默覆盖（file input 未清空），现在添加成功后强制清空 file input",
+        "【P0】修复 v2.1 AI 评分逻辑 3 个 BUG：汇总师 5 维评分脱钩 + 隐性条件 20% 权重虚高 + v1.0 废弃 Agent 残留",
+        "评分基线校准 +5 分偏置（用户反馈整体偏低：zy 76→81, cc 33→38, 刘洋 54→59, zzj 59→64）",
+        "v3.6 隐性维度异步评估：tech+soft / hidden 两阶段流水线，前端先看到基础分（partial_complete 事件），隐性维度后台异步完成",
+        "v3.6.5 同步保险机制：不再依赖不可靠的 daemon thread，HTTP 同步接口 + SSE 流接口都改为同步 LLM 出题",
+        "综合元评估报告一键导出 PDF（utils/meta_evaluation_pdf.py），自动适配 Windows/Linux 中文字体",
+        "新增岗位 JD 解析 Agent（agents/position_jd_parser.py），配合 PDF 上传→AI 识别→预览确认流程",
+        "新增文本截断工具（utils/text_truncate.py），防止超长简历/JD 撑爆 prompt",
+        "冒烟测试从 63 项扩到 87 项（新增 K 段隐性维度相关检查 + v3.6 SSE 接口检查），当前 87/87 PASS",
+        "部署工具链完善：UPLOAD_GUIDE.md 152 行详细云端部署手册 + install.sh/start.sh/stop.sh/log.sh + make_deploy_zip.ps1 一键打包脚本",
+        ".gitignore 完善：新增 _*.py/_*.txt/_*.png（调试残留）+ 测试用 PDF + 部署残留等规则"
+      ]
+    },
+    {
       "version": "v2.0",
       "date": "2026-07-23",
       "title": "综合元评估 + 候选人门户下线 + PDF 智能导入与导出",
@@ -18,7 +39,7 @@
         "岗位管理新增 PDF 智能导入：上传 JD PDF → AI 自动识别岗位名称/技术要求 → 预览确认",
         "手动录入与 PDF 智能导入两种方式并存（PDF 折叠为快捷入口）",
         "实时面试页布局重排：左侧对话区 75%，右侧控制面板 25%（角色控制卡片合并、AI 分析/追问改为可折叠）",
-                "PDF 简历导入后处理防护：自动检测行密度 < 8 的「字符级切碎」文档 + 去末尾 hash 漏出（解决 PyPDF2 处理特殊 PDF 时字符被单独成行的 bug）",
+        "PDF 简历导入后处理防护：自动检测行密度 < 8 的「字符级切碎」文档 + 去末尾 hash 漏出（解决 PyPDF2 处理特殊 PDF 时字符被单独成行的 bug）",
         "导航栏响应式：小屏自动折叠为汉堡菜单",
         "首页 Dashboard 新增数据统计卡片 + 更新日志卡片"
       ]
