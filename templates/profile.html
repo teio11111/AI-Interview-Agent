@@ -8,7 +8,7 @@
     </div>
 </div>
 
-<!-- 筛选栏 -->
+<!-- 筛选栏：按"对象·操作"两级分组单下拉 -->
 <div class="card mb-3">
     <div class="card-body py-2">
         <div class="row g-2 align-items-center">
@@ -19,22 +19,18 @@
                 </select>
             </div>
             <div class="col-auto">
-                <label class="small text-muted me-1">操作</label>
-                <select id="filterAction" class="form-select form-select-sm" style="width:140px" onchange="loadLogs(1)">
-                    <option value="">全部操作</option>
-                    <option value="login">登录</option>
-                    <option value="logout">登出</option>
-                    <option value="create">面试开始</option>
-                    <option value="change_password">修改密码</option>
-                    <option value="change_username">修改用户名</option>
-                </select>
-            </div>
-            <div class="col-auto">
-                <label class="small text-muted me-1">对象</label>
-                <select id="filterTarget" class="form-select form-select-sm" style="width:140px" onchange="loadLogs(1)">
-                    <option value="">全部对象</option>
-                    <option value="user">用户</option>
-                    <option value="interview_session">面试会话</option>
+                <label class="small text-muted me-1">记录类型</label>
+                <select id="filterCategory" class="form-select form-select-sm" style="width:200px" onchange="loadLogs(1)">
+                    <option value="">全部记录</option>
+                    <optgroup label="账户">
+                        <option value="login|user">登录</option>
+                        <option value="logout|user">登出</option>
+                        <option value="change_password|user">改密码</option>
+                        <option value="change_username|user">改名</option>
+                    </optgroup>
+                    <optgroup label="面试">
+                        <option value="create|interview_session">面试开始</option>
+                    </optgroup>
                 </select>
             </div>
             <div class="col-auto ms-auto">
@@ -118,11 +114,14 @@ async function loadLogs(page) {
 
     const params = new URLSearchParams({ page, per_page: 50 });
     const userId = document.getElementById('filterUser').value;
-    const action = document.getElementById('filterAction').value;
-    const target = document.getElementById('filterTarget').value;
+    // 解析 "action|target_type" 格式的复合值
+    const category = document.getElementById('filterCategory').value;
     if (userId) params.set('user_id', userId);
-    if (action) params.set('action', action);
-    if (target) params.set('target_type', target);
+    if (category) {
+        const [action, targetType] = category.split('|');
+        if (action) params.set('action', action);
+        if (targetType) params.set('target_type', targetType);
+    }
 
     document.getElementById('logList').innerHTML = '<div class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2"></div>加载中...</div>';
 
@@ -161,8 +160,7 @@ async function loadUsers() {
 
 function resetFilters() {
     document.getElementById('filterUser').value = '';
-    document.getElementById('filterAction').value = '';
-    document.getElementById('filterTarget').value = '';
+    document.getElementById('filterCategory').value = '';
     loadLogs(1);
 }
 
