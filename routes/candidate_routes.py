@@ -1,4 +1,5 @@
-from flask import Blueprint, request
+from flask import Blueprint, request, Response, current_app
+from extensions import db
 from models.candidate import Candidate
 from models.interview import InterviewSession, InterviewDialog
 from constants import SessionStatus
@@ -11,7 +12,9 @@ from utils.pdf_parser import extract_text_from_pdf
 from utils.response import success, error, created
 from utils.logger import logger
 from utils.auth import login_required
+from utils.meta_evaluation_pdf import generate_meta_evaluation_pdf
 import json
+import threading
 
 candidate_bp = Blueprint('candidates', __name__, url_prefix='/api/candidates')
 
@@ -73,7 +76,15 @@ def upload_resume():
 @candidate_bp.route('/<int:id>/analyze', methods=['POST'])
 @login_required(role='admin')
 def analyze_candidate(id):
-    """AI 分析简历匹配度，并自动生成面试会话"""
+    """AI 分析简历匹配度，并自动生成面试会话
+
+    【v2.1 性能修复】同步只跑简历评估（≈31s）+ 兑底题（<0.5s），保证接口 < 60s：
+      1. 同步调用 ResumeService.analyze_resume（3个评估师并行）
+      2. 同步生成 5 道兑底模板题（纯代码，不调 LLM）
+      3. 立即创建 InterviewSession（status='refining'）并返回
+      4. 后台异步线程调用 InterviewService.generate_questions（LLM 真出题），
+         完成后覆盖 questions_plan 并将 status 改为 'preparing'
+    """
     candidate = CandidateRepository.find_by_id(id)
     if not candidate:
         return error('候选人不存在', 404)
@@ -84,35 +95,129 @@ def analyze_candidate(id):
     if not position:
         return error('关联岗位不存在', 404)
 
-    # 1. 分析简历
+    # 1. 分析简历（同步，必须完成，耗时 ≈31s）
     result = ResumeService.analyze_resume(position, candidate.resume_text, candidate.name)
 
     if not result:
         return error('AI 分析失败，请重试', 502)
 
+    # 【v2.2 脱底去除】LLM 全面不可达时，不写虚假的 match_score 入库，
+    # 而是写 0 + 失败 flag，让前端表现出明确的"待重试"状态，不让用户看到假一份话。
+    is_llm_failed = bool(result.get('llm_fully_failed'))
+
     candidate.ai_analysis = json.dumps(result, ensure_ascii=False)
-    candidate.match_score = result.get('match_score', 0)
+    candidate.match_score = 0 if is_llm_failed else result.get('match_score', 0)
     CandidateRepository.update(candidate)
 
-    # 2. 自动生成面试问题和会话
-    questions = InterviewService.generate_questions(
-        position, candidate,
-        position.ai_analysis,
-        candidate.ai_analysis,
-        candidate.resume_text
-    )
+    # 2. 【v3.6.5 同步保险】同步调用 LLM 真出题（超时 90s），保证返回时 session 一定带上定制题，
+    #    不再依赖不可靠的 daemon Thread（waitress 8 worker 下 daemon thread 时灵时不灵，导致
+    #    session 卡在 preparing 状态 + 兑底题，用户进入实时面试看到恢复兑底题会话的错误现象）。
+    #    90s 以内能拿到 LLM 精修题，就用精修题；拿不到才退回到兑底题并在后台补精修。
+    refined_questions = None
+    try:
+        logger.info(f'[v3.6.5] 开始同步 LLM 真出题: candidate={candidate.name}')
+        refined_questions = InterviewService.generate_questions(
+            position, candidate,
+            position.ai_analysis,
+            candidate.ai_analysis,
+            candidate.resume_text,
+        )
+        if refined_questions and isinstance(refined_questions, dict) and refined_questions.get('questions'):
+            logger.info(
+                f'[v3.6.5] LLM 真出题成功: candidate={candidate.name}, '
+                f'questions={len(refined_questions["questions"])}'
+            )
+        else:
+            refined_questions = None
+    except Exception as e:
+        logger.error(f'[v3.6.5] 同步出题异常: candidate={candidate.name}, error={e}')
+        refined_questions = None
 
-    session = None
-    if questions:
+    # 3. 同步创建 InterviewSession（优先用 LLM 定制题，失败才用兑底题）
+    if refined_questions:
         session = InterviewSession(
             candidate_id=candidate.id,
             status=SessionStatus.PREPARING,
-            questions_plan=json.dumps(questions, ensure_ascii=False)
+            questions_plan=json.dumps(refined_questions, ensure_ascii=False)
         )
-        InterviewRepository.save_session(session)
-        logger.info(f'已为候选人 {candidate.name} 自动生成面试会话')
+    else:
+        fallback_questions = InterviewService.generate_fallback_questions(
+            position, candidate.resume_text
+        )
+        session = InterviewSession(
+            candidate_id=candidate.id,
+            status=SessionStatus.PREPARING,
+            questions_plan=json.dumps(fallback_questions, ensure_ascii=False)
+        )
+        # LLM 出题失败，后台异步重试（也给机会出定制题）
+        flask_app = current_app._get_current_object()
+        thread = threading.Thread(
+            target=_refine_questions_async,
+            args=(flask_app, candidate.id, position.id, session.id),
+            daemon=True,
+        )
+        thread.start()
+        logger.info(
+            f'[v3.6.5] 兑底题会话（异步补精修）: candidate={candidate.name}, '
+            f'session={session.id}, thread.is_alive={thread.is_alive()}'
+        )
+    InterviewRepository.save_session(session)
+    logger.info(f'[v3.6.5] 面试会话已创建: candidate={candidate.name}, session={session.id}')
 
-    return success({'analysis': result, 'candidate': candidate.to_dict(), 'session': session.to_dict() if session else None})
+    return success({'analysis': result, 'candidate': candidate.to_dict(), 'session': session.to_dict()})
+
+
+def _refine_questions_async(app, candidate_id, position_id, session_id):
+    """后台线程：异步生成 LLM 精修题目，覆盖兑底题
+
+    Args:
+        app: Flask app 实例（用于在线程里 push app_context）
+        candidate_id: 候选人 ID
+        position_id: 岗位 ID
+        session_id: 会话 ID
+    """
+    # 【v3.6.5】诊断日志：确认 daemon 线程真的能跑。某些 Flask 实例下子线程不生效，
+    # 问题表现为：同步兜底题创建后就停在 preparing，定制题永不写入。
+    logger.info(f'[异步精修] ⏰ 线程入口: candidate_id={candidate_id}, session_id={session_id}')
+    with app.app_context():
+        try:
+            from models.candidate import Candidate
+            from models.position import Position
+            from repositories.candidate_repository import CandidateRepository
+            from repositories.position_repository import PositionRepository
+
+            candidate = CandidateRepository.find_by_id(candidate_id)
+            position = PositionRepository.find_by_id(position_id)
+            if not candidate or not position:
+                logger.error(f'[异步精修] candidate/position 不存在: {candidate_id}/{position_id}')
+                return
+
+            logger.info(f'[异步精修] 开始: candidate={candidate.name}, position={position.name}')
+            refined = InterviewService.generate_questions(
+                position, candidate,
+                position.ai_analysis,
+                candidate.ai_analysis,
+                candidate.resume_text,
+            )
+
+            sess = InterviewRepository.find_session_by_id(session_id)
+            if not sess:
+                logger.error(f'[异步精修] session 不存在: {session_id}')
+                return
+
+            if refined and isinstance(refined, dict) and refined.get('questions'):
+                sess.questions_plan = json.dumps(refined, ensure_ascii=False)
+                logger.info(
+                    f'[异步精修] 完成: candidate={candidate.name}, '
+                    f'questions={len(refined["questions"])}'
+                )
+            else:
+                logger.warning(
+                    f'[异步精修] LLM 未返回有效结果，保留兑底题: candidate={candidate.name}'
+                )
+            InterviewRepository.update_session(sess)
+        except Exception as e:
+            logger.error(f'[异步精修] 异常: candidate_id={candidate_id}, error={e}')
 
 
 @candidate_bp.route('/<int:id>', methods=['DELETE'])
@@ -128,9 +233,9 @@ def delete_candidate(id):
     for session in sessions:
         dialogs = InterviewRepository.find_dialogs_by_session(session.id)
         for dialog in dialogs:
-            from extensions import db
             db.session.delete(dialog)
         db.session.delete(session)
+    db.session.commit()
     
     CandidateRepository.delete(candidate)
     return success({'id': id})
@@ -252,3 +357,68 @@ def get_meta_evaluation(id):
     except Exception:
         result = {}
     return success({'evaluation': result, 'candidate_id': id})
+
+
+@candidate_bp.route('/<int:id>/meta-evaluation/pdf', methods=['GET'])
+@login_required(role='admin')
+def export_meta_evaluation_pdf(id):
+    """导出综合元评估报告为 PDF 文件"""
+    candidate = CandidateRepository.find_by_id(id)
+    if not candidate:
+        return error('候选人不存在', 404)
+    if not candidate.meta_evaluation:
+        return error('尚未生成综合元评估，无法导出 PDF', 404)
+
+    # 1. 解析综合元评估
+    try:
+        evaluation = json.loads(candidate.meta_evaluation)
+    except Exception:
+        evaluation = {}
+
+    # 2. 解析计算调试字段（从 evaluation 中提取，或传 None）
+    computation = None
+    if isinstance(evaluation, dict):
+        # 兼容两种存储方式：顶层 raw_score/penalty，或嵌套在 computation 字段
+        if isinstance(evaluation.get('computation'), dict):
+            computation = evaluation['computation']
+        else:
+            # 从 evaluation 顶层重建一个简单的 computation 字典
+            comp_keys = ['raw_score', 'penalty', 'final_score', 'resume_weight', 'round_weights']
+            comp_data = {k: evaluation[k] for k in comp_keys if k in evaluation}
+            computation = comp_data if comp_data else None
+
+    # 3. 获取岗位信息
+    position = None
+    if candidate.position_id:
+        position = PositionRepository.find_by_id(candidate.position_id)
+
+    # 4. 准备数据结构
+    candidate_dict = candidate.to_dict()
+    position_dict = position.to_dict() if position else {}
+
+    try:
+        pdf_bytes = generate_meta_evaluation_pdf(
+            candidate_dict=candidate_dict,
+            position_dict=position_dict,
+            evaluation_dict=evaluation,
+            computation=computation,
+        )
+    except Exception as e:
+        logger.error(f'生成综合元评估 PDF 失败: candidate_id={id}, error={e}')
+        return error(f'PDF 生成失败：{str(e)[:80]}', 500)
+
+    # 5. 构造文件名（含中文，UTF-8 + URL 编码）
+    from urllib.parse import quote
+    safe_name = candidate.name or f'candidate_{id}'
+    filename = f'综合元评估报告_{safe_name}.pdf'
+    filename_encoded = quote(filename)
+
+    return Response(
+        pdf_bytes,
+        mimetype='application/pdf',
+        headers={
+            'Content-Disposition': f"attachment; filename*=UTF-8''{filename_encoded}",
+            'Content-Length': str(len(pdf_bytes)),
+            'Cache-Control': 'no-store',
+        },
+    )

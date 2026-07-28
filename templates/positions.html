@@ -32,7 +32,7 @@
     </div>
 </div>
 
-<!-- 新建岗位弹窗 -->
+<!-- 新建岗位弹窗（同时支持手动录入 + PDF 智能导入两种方式） -->
 <div class="modal fade" id="addModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -41,6 +41,26 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
+                <!-- 快捷入口：PDF 智能导入（默认折叠，需要时展开） -->
+                <div class="mb-3">
+                    <button class="btn btn-outline-primary btn-sm w-100" type="button" data-bs-toggle="collapse" data-bs-target="#pdfImportBox" aria-expanded="false">
+                        <i class="bi bi-magic me-1"></i>从 PDF 智能导入（AI 自动识别后弹出预览界面供你确认）
+                    </button>
+                    <div class="collapse mt-2" id="pdfImportBox">
+                        <div class="card card-body bg-light">
+                            <div class="mb-2">
+                                <input type="file" class="form-control form-control-sm" id="pdfFile" accept=".pdf">
+                            </div>
+                            <button class="btn btn-primary btn-sm w-100" type="button" id="btnParseJd" onclick="parseJd()">
+                                <i class="bi bi-magic me-1"></i>AI 识别岗位
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <hr class="my-3">
+
+                <!-- 手动填写表单 -->
                 <div class="mb-3">
                     <label class="form-label">岗位名称 <span class="text-danger">*</span></label>
                     <input type="text" class="form-control" id="newName" placeholder="如：Python后端开发">
@@ -57,6 +77,43 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button type="button" class="btn btn-primary" id="btnCreate" onclick="createPosition()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 识别预览确认弹窗（独立界面，面试官可修改任意字段后导入） -->
+<div class="modal fade" id="previewModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><span class="badge badge-ai me-2"><i class="bi bi-robot"></i> AI</span>识别结果预览 · 请确认后导入</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning py-2 small mb-3">
+                    <i class="bi bi-exclamation-triangle me-1"></i>识别结果可能不完整，面试官可在下方<strong>任意修改</strong>后再确认导入。
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">岗位名称 <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="previewName" placeholder="如：Python后端开发">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">JD 内容</label>
+                    <textarea class="form-control" id="previewJd" rows="6" placeholder="职位描述、职责要求..."></textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">技术要求 <small class="text-muted">(逗号分隔)</small></label>
+                    <input type="text" class="form-control" id="previewTech" placeholder="如：Python,FastAPI,MySQL">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="backToUpload()">
+                    <i class="bi bi-arrow-left me-1"></i>返回重新上传
+                </button>
+                <button class="btn btn-primary" type="button" id="btnConfirmCreate" onclick="confirmCreatePosition()">
+                    <i class="bi bi-check-lg me-1"></i>确认导入
+                </button>
             </div>
         </div>
     </div>
@@ -115,27 +172,108 @@ async function loadPositions() {
     `).join('');
 }
 
+async function parseJd() {
+    const btn = document.getElementById('btnParseJd');
+    const fileInput = document.getElementById('pdfFile');
+    const hasFile = fileInput.files && fileInput.files.length > 0;
+
+    if (!hasFile) {
+        showToast('请先选择 PDF 文件', 'warning');
+        return;
+    }
+
+    setLoading(btn, true);
+    try {
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        const r = await fetch('/api/positions/parse-jd', {
+            method: 'POST',
+            body: formData,
+        });
+        const res = await r.json();
+
+        if (res.code !== 0 && res.code !== 200) {
+            showToast(res.message || '识别失败', 'danger');
+            return;
+        }
+
+        const { name, jd_content, tech_requirements } = res.data;
+        // 填充预览弹窗
+        document.getElementById('previewName').value = name || '';
+        document.getElementById('previewJd').value = jd_content || '';
+        document.getElementById('previewTech').value = tech_requirements || '';
+
+        // 关闭上传弹窗 → 打开预览弹窗
+        bootstrap.Modal.getInstance(document.getElementById('addModal')).hide();
+        const previewModal = new bootstrap.Modal(document.getElementById('previewModal'));
+        previewModal.show();
+
+        showToast(`识别完成，共识别到 ${(tech_requirements || '').split(',').filter(s => s.trim()).length} 项技术要求`);
+    } catch (e) {
+        showToast('请求失败：' + e.message, 'danger');
+    } finally {
+        setLoading(btn, false);
+    }
+}
+
+function backToUpload() {
+    // 预览返回上传：关闭预览，重新打开上传弹窗（保留已选 PDF）
+    bootstrap.Modal.getInstance(document.getElementById('previewModal')).hide();
+    setTimeout(() => new bootstrap.Modal(document.getElementById('addModal')).show(), 200);
+}
+
+// 手动录入路径：从 addModal 三个字段直接创建
 async function createPosition() {
     const name = document.getElementById('newName').value.trim();
     if (!name) { showToast('请输入岗位名称', 'warning'); return; }
-    
+
     const btn = document.getElementById('btnCreate');
     setLoading(btn, true);
-    
+
     const res = await apiCall('/api/positions', 'POST', {
         name,
         jd_content: document.getElementById('newJd').value,
         tech_requirements: document.getElementById('newTech').value
     });
-    
+
     setLoading(btn, false);
-    
+
     if (res.code === 201) {
         showToast('岗位创建成功');
         bootstrap.Modal.getInstance(document.getElementById('addModal')).hide();
         document.getElementById('newName').value = '';
         document.getElementById('newJd').value = '';
         document.getElementById('newTech').value = '';
+        loadPositions();
+    } else {
+        showToast(res.message, 'danger');
+    }
+}
+
+async function confirmCreatePosition() {
+    const name = document.getElementById('previewName').value.trim();
+    if (!name) { showToast('请输入岗位名称', 'warning'); return; }
+
+    const btn = document.getElementById('btnConfirmCreate');
+    setLoading(btn, true);
+
+    const res = await apiCall('/api/positions', 'POST', {
+        name,
+        jd_content: document.getElementById('previewJd').value,
+        tech_requirements: document.getElementById('previewTech').value
+    });
+
+    setLoading(btn, false);
+
+    if (res.code === 201) {
+        showToast('岗位导入成功');
+        bootstrap.Modal.getInstance(document.getElementById('previewModal')).hide();
+        // 重置上传弹窗（供下次使用）
+        const fileInput = document.getElementById('pdfFile');
+        if (fileInput) fileInput.value = '';
+        document.getElementById('previewName').value = '';
+        document.getElementById('previewJd').value = '';
+        document.getElementById('previewTech').value = '';
         loadPositions();
     } else {
         showToast(res.message, 'danger');

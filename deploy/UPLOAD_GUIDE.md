@@ -15,9 +15,9 @@ mysql --version
 sudo systemctl status mysql
 # 如果没装：宝塔面板 → 软件商店 → 搜 MySQL 8.0 → 安装
 
-# 0.3 确认 ai_interview_prod 库存在
-mysql -uai_app -p'AppProd@2026' ai_interview_prod -e "SELECT DATABASE();"
-# 看到 ai_interview_prod 说明建好了
+# 0.3 确认 ai_interview_agent 库存在（v2.0 实际库名）
+mysql -uai_interview_agent -p'宝塔面板里查的密码' ai_interview_agent -e "SELECT DATABASE();"
+# 看到 ai_interview_agent 说明建好了
 
 # 0.4 确认 8088 端口空闲
 ss -tlnp | grep 8088
@@ -68,8 +68,9 @@ sudo bash install.sh
 2. 建 venv
 3. 装依赖（requirements_full.txt）
 4. 复制 `.env.production` → `.env`（**会让你填密钥**）
-5. 关 DEBUG
-6. 跑 init_admin.py 建 admin 账号（admin / admin123，**部署完请改密码**）
+5. 关 DEBUG（v2.0 会在 app.py:86 里改 socketio.run 的 debug 参数）
+6. 跑一次 app.py 让 create_all 建表
+7. 跑 init_admin.py 建 admin 账号（admin / admin123，**部署完请改密码**）
 
 ---
 
@@ -79,11 +80,14 @@ sudo bash install.sh
 cd /home/steve/ai-interview
 nano .env
 # 至少要填这几项：
-#   SECRET_KEY  →  openssl rand -hex 32
-#   LLM_API_KEY →  DeepSeek 真实 key
-#   XFYUN_*     →  讯飞真实 key
-#   TENCENT_*   →  腾讯云真实 key
+#   DB_PASSWORD    →  宝塔面板 → 数据库 → ai_interview_agent 账号的密码
+#   SECRET_KEY     →  openssl rand -hex 32
+#   LLM_API_KEY    →  MiniMax-M3 真实 key
+#   XFYUN_*        →  讯飞真实 key
+#   TENCENT_*      →  腾讯云真实 key
 ```
+
+**v2.0 起 LLM_TIMEOUT 推荐 120**（简历长 / 隐性条件丰富时 MiniMax-M3 可能超过 60 秒；超时不要低于 90，否则会卡死）。
 
 ---
 
@@ -121,13 +125,14 @@ tail -f flask.log
 
 | 报错 | 解决 |
 |------|------|
-| `pymysql.err.OperationalError: (1045)` Access denied | 密码不对，检查 `.env` 里的 `DB_PASSWORD` 跟建库时一致 |
+| `pymysql.err.OperationalError: (1045)` Access denied | 密码不对，检查 `.env` 里的 `DB_PASSWORD` 跟宝塔面板里 ai_interview_agent 账号的密码一致 |
 | `pymysql.err.OperationalError: (2003)` Can't connect | `DB_HOST` 用 `localhost`（不要 `127.0.0.1`） |
 | `pymysql.err.OperationalError: (1049)` Unknown database | 库没建好，重新跑 mysql 客户端确认 |
 | `ModuleNotFoundError: No module named 'flask_socketio'` | 漏装，重新跑 `pip install -r requirements_full.txt` |
 | Flask-SocketIO 启动报 werkzeug 错 | 确认 `app.py` 最后一行有 `allow_unsafe_werkzeug=True` |
 | 端口 8088 已占用 | `ss -tlnp \| grep 8088` 看 PID，杀掉或换端口 |
 | admin 账号已存在 | `init_admin.py` 自动跳过，直接用 |
+| LLM 调用 MiniMax-M3 卡死 / 超时 | 把 `.env` 里 `LLM_TIMEOUT` 调到 `120`（简历长 / 隐性要求多时必调） |
 
 ---
 
@@ -142,6 +147,6 @@ deploy/
 ├── stop.sh                 # 停止 Flask
 ├── restart.sh              # 重启 Flask
 ├── log.sh                  # 看实时日志
-├── create_database.sh      # 【备用】MySQL 建库脚本（你已建好可不跑）
+├── create_database.sh      # 【备用】MySQL 建库脚本（v2.0 默认库名 ai_interview_agent）
 └── UPLOAD_GUIDE.md         # 本文档
 ```

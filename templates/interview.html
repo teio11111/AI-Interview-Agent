@@ -357,8 +357,22 @@ function renderSessionList() {
 }
 
 async function selectSession(sessionId) {
+    // 【v3.5 修复】会话已删除时的状态清理
+    // 之前：API 返回 404 时只 return 不清理，导致 questionsList 仍显示上一会话的题目
+    // 现在：任何 selectSession 入口先清空 currentQuestions + DOM，再尝试加载
+    currentQuestions = [];
+    const _qList = document.getElementById('questionsList');
+    if (_qList) _qList.innerHTML = '';
+    const _dHist = document.getElementById('dialogHistory');
+    if (_dHist) _dHist.innerHTML = '<p class="text-muted text-center py-4">会话不存在或已删除</p>';
+
     const res = await apiCall(`/api/interviews/${sessionId}`);
-    if (res.code !== 200) return;
+    if (res.code !== 200) {
+        showToast('会话不存在或已删除（可能由管理员清理）', 'warning');
+        // 触发刷新会话语列表
+        if (typeof loadSessions === 'function') loadSessions();
+        return;
+    }
     
     currentSession = res.data.session;
     const dialogs = res.data.dialogs;

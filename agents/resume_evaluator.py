@@ -1,4 +1,20 @@
-"""简历评估师 Agent - 专注简历与岗位匹配度评估"""
+"""⚠️ DEPRECATED: 简历评估师 Agent (v1.0 单 Agent 架构)
+
+⚠️ 本文件已废弃，自 v2.0 多 Agent 架构起不再使用：
+
+✅ v2.0 替代方案（3 个专家 + 1 个汇总师）：
+- 技术评估师：agents.tech_evaluator.TechEvaluatorAgent
+- 综合素质评估师：agents.soft_evaluator.SoftEvaluatorAgent
+- 隐性因素评估师：agents.hidden_evaluator.HiddenEvaluatorAgent
+- 简历汇总师：agents.resume_coordinator.ResumeCoordinatorAgent
+
+⚠️ 本文件作为历史代码保留，仅供查阅。
+
+保留原因：v1.0 与 v2.0 架构过渡期间，业务方可能仍在引用老接口，避免强制删除破坏依赖。
+如需查看 v1.0 评估逻辑，请参考 git 历史或 ARCHIVE_README。
+
+Deprecated since: v2.0 (2026-07-15)
+"""
 from agents.base_agent import BaseAgent
 
 

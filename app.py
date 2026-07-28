@@ -45,6 +45,19 @@ def create_app():
         from utils.auth import get_current_user
         return {'current_user': get_current_user()}
 
+    # 模板上下文：注入更新日志（首页 Dashboard 使用）
+    @app.context_processor
+    def inject_changelog():
+        import json
+        import os
+        changelog_path = os.path.join(os.path.dirname(__file__), 'data', 'changelog.json')
+        try:
+            with open(changelog_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return {'changelog_versions': data.get('versions', [])}
+        except Exception:
+            return {'changelog_versions': []}
+
     # 未登录访问根路径时跳转登录
     @app.before_request
     def redirect_root():
@@ -57,17 +70,24 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
-    
+
     # SocketIO 事件处理
     from flask_socketio import join_room, leave_room
-    
+
     @socketio.on('join')
     def handle_join(room):
         join_room(room)
         logger.info(f'[SocketIO] 客户端加入房间: {room}')
-    
+
     @socketio.on('leave')
     def handle_leave(room):
         leave_room(room)
-    
-    socketio.run(app, host='0.0.0.0', port=8088, debug=True, allow_unsafe_werkzeug=True)
+
+    # 【v3.1 修复】改用 waitress 提供 WSGI 服务
+    # 原 socketio.run(app, ..., allow_unsafe_werkzeug=True) 用的是 Werkzeug dev server，
+    # 它会缓冲 SSE 输出，导致前端进度条只看到第一个事件后就卡 75%，要等 5s 心跳才 flush。
+    # waitress 不会缓冲流式响应，每个 yield 立即送到浏览器，进度条能平滑增长。
+    # SocketIO 中间件已在 socketio.init_app(app) 时挂到 app.wsgi_app，waitress 会自动走它。
+    from waitress import serve
+    logger.info('[启动] 使用 waitress 提供 WSGI 服务（流式响应零缓冲）')
+    serve(app, host='0.0.0.0', port=8088, threads=8)

@@ -65,6 +65,118 @@ class ComprehensiveMetaEvaluatorAgent(BaseAgent):
         raw = cls.compute_overall_score_raw(resume_match_score, round_scores_100)
         return int(round(raw))
 
+    # ===== 【设计修复】跨阶段一致性惩罚 =====
+
+    @classmethod
+    def _cross_validation_penalty(cls, cross_stage_analysis=None, key_risks=None):
+        """根据跨阶段一致性 + 关键风险计算综合评分惩罚（最多扣 25 分）。
+
+        设计原因：
+        - 仅靠加权求和算分时，简历「说好」但面试「差」这种不一致会被分数掩盖。
+        - cross_stage_analysis（跨阶段交叉验证） 与 key_risks（关键风险）
+          是 LLM 识别出的「质性信号」，应该量化反映到最终分数里。
+        - 惩罚规则：
+            · 每 1 条「不一致」 结论 → 扣 5 分
+            · 每 1 条「部分一致」结论 → 扣 2 分
+            · 每 1 个「高」严重度风险 → 扣 5 分
+            · 每 1 个「中」严重度风险 → 扣 2 分
+            · 累计上限 25 分（避免过度惩罚导致分数断崖下跌）
+
+        Returns:
+            int: 扣分值（0–25）
+        """
+        penalty = 0
+        if cross_stage_analysis and isinstance(cross_stage_analysis, dict):
+            findings = cross_stage_analysis.get('consistency_findings') or []
+            for f in findings:
+                if not isinstance(f, dict):
+                    continue
+                verdict = (f.get('verdict') or '').strip()
+                if verdict == '不一致':
+                    penalty += 5
+                elif verdict == '部分一致':
+                    penalty += 2
+        if key_risks and isinstance(key_risks, list):
+            for r in key_risks:
+                if not isinstance(r, dict):
+                    continue
+                sev = (r.get('severity') or '').strip()
+                if sev == '高':
+                    penalty += 5
+                elif sev == '中':
+                    penalty += 2
+        return min(25, penalty)
+
+    @classmethod
+    def compute_overall_score_with_validation(cls, resume_match_score, round_scores_100,
+                                              cross_stage_analysis=None, key_risks=None):
+        """计算最终综合分（应用跨阶段一致性惩罚后），返回 (final_score, penalty)。
+
+        与 compute_overall_score 的区别：本方法会在加权求和基础上，
+        依据跨阶段验证和关键风险对分数进行扣减，避免“简历说好但面试差”不被发现。
+
+        Returns:
+            tuple: (final_score, penalty)
+        """
+        raw = cls.compute_overall_score_raw(resume_match_score, round_scores_100)
+        penalty = cls._cross_validation_penalty(cross_stage_analysis, key_risks)
+        final = max(0, int(round(raw)) - penalty)
+        return final, penalty
+
+    @classmethod
+    def _format_penalty_note(cls, penalty, cross_stage_analysis, key_risks):
+        """生成「扣分说明」中文本（如 已应用跨阶段一致性验证：2项不一致 + 1项高风险，扣15分）。"""
+        if penalty <= 0:
+            return ''
+
+        inconsistency_count = 0
+        partial_count = 0
+        high_risk_count = 0
+        med_risk_count = 0
+
+        if cross_stage_analysis and isinstance(cross_stage_analysis, dict):
+            for f in (cross_stage_analysis.get('consistency_findings') or []):
+                if isinstance(f, dict):
+                    v = (f.get('verdict') or '').strip()
+                    if v == '不一致':
+                        inconsistency_count += 1
+                    elif v == '部分一致':
+                        partial_count += 1
+        if key_risks and isinstance(key_risks, list):
+            for r in key_risks:
+                if isinstance(r, dict):
+                    sev = (r.get('severity') or '').strip()
+                    if sev == '高':
+                        high_risk_count += 1
+                    elif sev == '中':
+                        med_risk_count += 1
+
+        notes = []
+        if inconsistency_count or partial_count:
+            s = f'{inconsistency_count}项不一致'
+            if partial_count:
+                s += f'+{partial_count}项部分一致'
+            notes.append(s)
+        if high_risk_count or med_risk_count:
+            s = f'{high_risk_count}项高风险'
+            if med_risk_count:
+                s += f'+{med_risk_count}项中风险'
+            notes.append(s)
+
+        if notes:
+            return f'（已应用跨阶段一致性验证：{" / ".join(notes)}，扣{penalty}分）'
+        return f'（已应用跨阶段一致性验证，扣{penalty}分）'
+
+    @classmethod
+    def decision_rationale_for_with_validation(cls, raw_score, final_score, round_scores,
+                                               resume_match_score,
+                                               cross_stage_analysis=None, key_risks=None):
+        """在基础决策理由上叠加跨阶段一致性扣分说明。"""
+        base = cls.decision_rationale_for(final_score, round_scores, resume_match_score)
+        penalty = max(0, int(round(raw_score)) - final_score)
+        note = cls._format_penalty_note(penalty, cross_stage_analysis, key_risks)
+        return (base + note) if note else base
+
     @classmethod
     def recommendation_for(cls, score):
         """根据综合分查五档推荐等级"""

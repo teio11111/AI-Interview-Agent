@@ -55,14 +55,6 @@ class InterviewService:
                            resume_text=None, on_progress=None):
         """生成面试问题（委托给多智能体出题协作）
 
-        Args:
-            position: Position 模型
-            candidate: Candidate 模型
-            position_analysis: 岗位分析结果 (dict 或 str)
-            resume_analysis: 简历评估结果 (dict 或 str)
-            resume_text: 候选人简历原文
-            on_progress: 进度回调
-
         Returns:
             dict: 问题列表，失败返回 None
         """
@@ -75,6 +67,123 @@ class InterviewService:
             resume_text or candidate.resume_text or '',
             on_progress=on_progress
         )
+
+    @staticmethod
+    def generate_fallback_questions(position, resume_text=''):
+        """【v2.1 性能修复】纯代码生成兜底面试题（<0.5s 完成）
+
+        背景：
+          当 LLM 出题阶段被限流/超时（场景：MiniMax API 限流，需要 25-50s），
+          为保证 analyze 接口 < 60s 返回，先用模板题立即返回给候选人。
+          后台线程异步跑 LLM 真出题，生成完后覆盖 session.questions_plan。
+
+        题目设计：
+          1 道项目深挖 + 2 道技能验证 + 1 道短板探测 + 1 道场景设计 = 5 题
+
+        Args:
+            position: Position 模型（含 tech_requirements + jd_content）
+            resume_text: 候选人简历原文（可空）
+
+        Returns:
+            dict: {
+                'questions': [...5 questions...],
+                'review_log': {冗余统计},
+                'approved': True,
+                'is_fallback': True  # 标记为兑底题，后续会被覆盖
+            }
+        """
+        tech = (position.tech_requirements or '').lower()
+        jd = (position.jd_content or '').lower() if hasattr(position, 'jd_content') else ''
+        corpus = f'{tech} {jd}'
+
+        # 优先匹配岗位关键词：java/spring/redis/mysql/kafka/docker/k8s/react/vue/python/go/...
+        skill_topic = None
+        skill_priority = ['java', 'spring', 'spring boot', 'redis', 'mysql',
+                          'kafka', 'docker', 'kubernetes', 'elasticsearch',
+                          'react', 'vue', 'python', 'go', 'rust', 'mongodb']
+        for kw in skill_priority:
+            if kw in corpus:
+                skill_topic = kw.upper()
+                break
+
+        questions = []
+
+        # 题1：项目深挖
+        questions.append({
+            'seq': 1,
+            'type': 'project',
+            'category': '项目深挖',
+            'question': '请挑一个你最有成就感的项目，完整介绍背景、你的角色、技术选型、遇到的最大挑战以及如何解决。',
+            'answer_directions': '考察项目深度与归纳能力，关注候选人在项目中的具体贡献（不是项目本身）、决策与技术取舍。',
+            'source': '兑底题库-项目深挖模板',
+            'modified': True,
+        })
+
+        # 题2：技能验证（匹配关键词）
+        if skill_topic:
+            questions.append({
+                'seq': 2,
+                'type': 'skill',
+                'category': '技能验证',
+                'question': f'你在项目中是怎么使用 {skill_topic} 的？请结合一个具体场景谈谈：选型原因、关键参数踩过的坑。',
+                'answer_directions': f'考察 {skill_topic} 实战能力，关注是否真用过、细节是否准确（不要泛泛而谈）。',
+                'source': f'兑底题库-技能验证[{skill_topic}]',
+                'modified': True,
+            })
+        else:
+            questions.append({
+                'seq': 2,
+                'type': 'skill',
+                'category': '技能验证',
+                'question': '你简历中提到的最核心的技术是什么？请结合一个具体场景详细描述你是怎么使用的。',
+                'answer_directions': '考察技能真实熟练度与场景化表达。',
+                'source': '兑底题库-技能验证通用',
+                'modified': True,
+            })
+
+        # 题3：技能对比/权衡
+        questions.append({
+            'seq': 3,
+            'type': 'comparison',
+            'category': '技能对比',
+            'question': '对比两种主流的技术方案（如关系型 vs 非关系型数据库、消息队列选型等），谈谈它们的适用场景与取舍。',
+            'answer_directions': '考察技术视野与决策能力，避免「这个好」式回答。',
+            'source': '兑底题库-技能对比模板',
+            'modified': True,
+        })
+
+        # 题4：短板探测
+        questions.append({
+            'seq': 4,
+            'type': 'weakness',
+            'category': '短板探测',
+            'question': '你觉得自己在技术方面最薄弱的一块是什么？最近是怎么补的、进度如何？',
+            'answer_directions': '考察自我认知、学习能力、是否对职业发展有明确规划。',
+            'source': '兑底题库-短板探测模板',
+            'modified': True,
+        })
+
+        # 题5：场景设计
+        questions.append({
+            'seq': 5,
+            'type': 'scenario',
+            'category': '场景设计',
+            'question': '如果你从零开始设计一个中等规模的系统（如电商/社交/教育平台），你会怎么设计架构？请从分层、数据流、关键组件、容灾四个维度展开。',
+            'answer_directions': '考察系统设计能力、权衡取舍、技术深度。',
+            'source': '兑底题库-场景设计模板',
+            'modified': True,
+        })
+
+        return {
+            'questions': questions,
+            'review_log': {
+                'total_received': 5,
+                'total_selected': 5,
+                'quality_notes': 'v2.1 性能修复：LLM 出题被限流时使用兑底题，后续后台异步精修会覆盖。',
+            },
+            'approved': True,
+            'is_fallback': True,
+        }
 
     @staticmethod
     def get_dialog_feedback(candidate_name, position_name, resume_text,
@@ -119,7 +228,8 @@ class InterviewService:
 
     @staticmethod
     def generate_report(position, candidate_name, full_dialogs_text,
-                        questions_plan=None, on_progress=None):
+                        questions_plan=None, single_round_scores=None,
+                        on_progress=None):
         """生成本轮面试评价报告（委托给 3+1 多智能体）
 
         Args:
@@ -127,7 +237,7 @@ class InterviewService:
             candidate_name: 候选人姓名
             full_dialogs_text: 全部对话文本
             questions_plan: 出题策略（可选）
-            on_progress: 进度回调
+            single_round_scores: 【新增】每条对话实时评分（1-10），会传给汇总师
 
         Returns:
             dict: 面试评价报告，失败返回 None
@@ -139,5 +249,6 @@ class InterviewService:
             candidate_name,
             full_dialogs_text,
             questions_plan=questions_plan,
+            single_round_scores=single_round_scores,
             on_progress=on_progress
         )

@@ -34,10 +34,15 @@ from agents.topic_segmenter import TopicSegmenterAgent
 # 综合元评估（1个，最后阶段的最终裁判）
 from agents.comprehensive_meta_evaluator import ComprehensiveMetaEvaluatorAgent
 
-# 保留旧 Agent（降级用）
-from agents.evaluator import EvaluatorAgent
-from agents.resume_evaluator import ResumeEvaluatorAgent
-from agents.question_designer import QuestionDesignerAgent
+# ============================================================
+# ⚠️ v1.0 保留 Agent（DEPRECATED，自 v2.0 起不再使用）
+# ============================================================
+# 以下 3 个 Agent 已废弃，但保留文件作 archive。**不会自动 export**，
+# 业务代码如需调用，必须显式 import（同时触发 DeprecationWarning 提醒）。
+# - agents.evaluator.EvaluatorAgent            → 用 InterviewEvalCoordinatorAgent
+# - agents.resume_evaluator.ResumeEvaluatorAgent → 用 ResumeCoordinatorAgent
+# - agents.question_designer.QuestionDesignerAgent → 用 QuestionCoordinatorAgent
+# ============================================================
 
 __all__ = [
     'BaseAgent',
@@ -47,13 +52,11 @@ __all__ = [
     'SoftEvaluatorAgent',
     'HiddenEvaluatorAgent',
     'ResumeCoordinatorAgent',
-    'ResumeEvaluatorAgent',
     # 出题
     'ProjectQuestionerAgent',
     'SkillQuestionerAgent',
     'WeaknessQuestionerAgent',
     'QuestionCoordinatorAgent',
-    'QuestionDesignerAgent',
     # 面试
     'TechInterviewerAgent',
     'SoftInterviewerAgent',
@@ -67,6 +70,8 @@ __all__ = [
     'TopicSegmenterAgent',
     # 综合元评估
     'ComprehensiveMetaEvaluatorAgent',
-    # 旧 Agent
-    'EvaluatorAgent',
+    # ⚠️ 注意：以下 3 个 v1.0 Agent 不再 export，需显式 import
+    # 'EvaluatorAgent',          # v2.0: 用 InterviewEvalCoordinatorAgent
+    # 'ResumeEvaluatorAgent',    # v2.0: 用 ResumeCoordinatorAgent
+    # 'QuestionDesignerAgent',   # v2.0: 用 QuestionCoordinatorAgent
 ]

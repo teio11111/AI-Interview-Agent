@@ -1,5 +1,6 @@
 """选题官 Agent - 审核、去重、整合三位出题官的题目"""
 from agents.base_agent import BaseAgent
+from utils.text_truncate import truncate_for_prompt
 
 
 class QuestionCoordinatorAgent(BaseAgent):
@@ -31,7 +32,7 @@ class QuestionCoordinatorAgent(BaseAgent):
 
     def select(self, project_questions, skill_questions, weakness_questions,
                position_name, resume_text, resume_analysis):
-        """审核并整合三位出题官的题目
+        """审核并整合三位出题官的题目（v2.1 纯代码版）
 
         Args:
             project_questions: 项目深挖出题官的结果
@@ -44,7 +45,23 @@ class QuestionCoordinatorAgent(BaseAgent):
         Returns:
             dict: 最终定稿的题目列表
         """
+        # 【v2.1 性能修复】如果三个出题官都成功，直接纯代码合并，不调 LLM。
+        # 选 LLM 调用上耗时 30-40s 但仅做去重和难度调优，纯代码可代替。
+        proj_qs = (project_questions or {}).get('questions') or []
+        skill_qs = (skill_questions or {}).get('questions') or []
+        weak_qs = (weakness_questions or {}).get('questions') or []
+
+        if proj_qs and skill_qs and weak_qs:
+            # 三个出题官都成功 → 纯代码合并 + 去重
+            return self._merge_questions(proj_qs, skill_qs, weak_qs)
+
+        # 有出题官失败 → 调用 LLM 备份
         import json
+
+        resume_sum = truncate_for_prompt(self.summarize(resume_analysis), max_chars=2000)
+        project_qs = truncate_for_prompt(json.dumps((project_questions or {}).get('questions', []), ensure_ascii=False, indent=2), max_chars=3500)
+        skill_qs = truncate_for_prompt(json.dumps((skill_questions or {}).get('questions', []), ensure_ascii=False, indent=2), max_chars=3000)
+        weakness_qs = truncate_for_prompt(json.dumps((weakness_questions or {}).get('questions', []), ensure_ascii=False, indent=2), max_chars=3500)
 
         prompt = f"""## 任务
 你是选题官。三位出题官已分别提交了题目，请审核、去重、整合，输出最终定稿。
@@ -55,17 +72,17 @@ class QuestionCoordinatorAgent(BaseAgent):
 ## 候选人简历
 {resume_text or '暂无'}
 
-## 简历评估结果（供参考）
-{self.summarize(resume_analysis)}
+## 简历评估结果（摘要，供参考）
+{resume_sum}
 
 ## 项目深挖出题官的题目（应有3道）
-{json.dumps((project_questions or {}).get('questions', []), ensure_ascii=False, indent=2)}
+{project_qs}
 
 ## 技能验证出题官的题目（应有2道）
-{json.dumps((skill_questions or {}).get('questions', []), ensure_ascii=False, indent=2)}
+{skill_qs}
 
 ## 短板探测出题官的题目（应有2-3道）
-{json.dumps((weakness_questions or {}).get('questions', []), ensure_ascii=False, indent=2)}
+{weakness_qs}
 
 ## 审核标准
 
@@ -120,6 +137,86 @@ class QuestionCoordinatorAgent(BaseAgent):
     "approved": true
 }}"""
         return self.think_json(prompt)
+
+    def _merge_questions(self, project_qs, skill_qs, weakness_qs):
+        """【v2.1 纯代码】合并三位出题官的题目（去重 + 来源标注 + 难度统计）
+
+        替代选题官的 LLM 调用。三个出题官都成功时 → 不调 LLM，仅保留：
+          - 去重：基于 question 文本关键词集合的 Jaccard 相似度（>0.6 视为重复）
+          - 分类来源标注
+          - answer_directions 字段透传
+          - 难度分布统计
+
+        Returns:
+            dict: {questions, review_log, approved}
+        """
+        # 1. 收集所有题目 + 来源标签
+        all_qs = []
+        for q in (project_qs or []):
+            q = dict(q)
+            q['source'] = '项目深挖出题官'
+            q['modified'] = False
+            all_qs.append(q)
+        for q in (skill_qs or []):
+            q = dict(q)
+            q['source'] = '技能验证出题官'
+            q['modified'] = False
+            all_qs.append(q)
+        for q in (weakness_qs or []):
+            q = dict(q)
+            q['source'] = '短板探测出题官'
+            q['modified'] = False
+            all_qs.append(q)
+
+        # 2. 去重：按 question 文本的关键词集合相似度
+        import re
+
+        def _keywords(text, top=12):
+            text = re.sub(r'[^\w\u4e00-\u9fa5]', ' ', text or '')
+            words = [w for w in text.split() if len(w) >= 2]
+            return set(words[:top])
+
+        unique = []
+        removed = []
+        for q in all_qs:
+            qk = _keywords(q.get('question', ''))
+            is_dup = False
+            for u in unique:
+                uk = _keywords(u.get('question', ''))
+                if not qk or not uk:
+                    continue
+                jacc = len(qk & uk) / len(qk | uk)
+                if jacc > 0.6:
+                    is_dup = True
+                    removed.append({
+                        'question_index': len(unique),
+                        'source': q.get('source'),
+                        'reason': f'与已有题目相似 (Jaccard={jacc:.2f})',
+                    })
+                    break
+            if not is_dup:
+                unique.append(q)
+
+        # 3. 难度分布统计
+        diff_count = {'easy': 0, 'medium': 0, 'hard': 0}
+        for q in unique:
+            d = (q.get('difficulty') or 'medium').lower()
+            if d not in diff_count:
+                d = 'medium'
+            diff_count[d] += 1
+
+        return {
+            'questions': unique,
+            'review_log': {
+                'total_received': len(all_qs),
+                'total_selected': len(unique),
+                'removed': removed,
+                'difficulty_distribution': diff_count,
+                'quality_notes': 'v2.1 纯代码合并（去重 + 来源标注 + 难度统计），未调 LLM',
+                'missing_directions': '',
+            },
+            'approved': True,
+        }
 
     def request_revision(self, original_questions, issues, resume_text):
         """要求出题官修订有问题的题目

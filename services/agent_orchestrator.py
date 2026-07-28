@@ -1,5 +1,6 @@
 """Agent 编排器 - 协调多智能体协作完成面试流程（专家小组+汇总裁判模式）"""
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import BoundedSemaphore
 from flask import current_app
 import time
 from datetime import datetime
@@ -90,28 +91,49 @@ class AgentOrchestrator:
 
         logger.info('Agent 编排器初始化完成（多智能体协作模式）')
 
-    def _emit(self, on_progress, event_type, agent_name, stage, message=''):
-        """发送进度事件"""
+    def _emit(self, on_progress, event_type, agent_name, stage, message='', percent=None, _extra=None):
+        """发送进度事件
+
+        【v3.1】新增 percent 参数：让前端 bar 能跟 agent 一起平滑增长。
+        若调用方没传 percent，前端 pushAiStage 会忽略 bar 更新（只追加阶段列表）。
+
+        【v3.6】新增 _extra 参数：可传递 dict，合并到 payload（用于 partial_result 等）。
+        """
         if on_progress:
             try:
-                on_progress(event_type, {
+                payload = {
                     'agent': agent_name,
                     'stage': stage,
                     'message': message,
-                    'timestamp': datetime.now().isoformat()
-                })
+                    'timestamp': datetime.now().isoformat(),
+                }
+                if percent is not None:
+                    payload['percent'] = percent
+                if isinstance(_extra, dict):
+                    payload.update(_extra)
+                on_progress(event_type, payload)
             except Exception:
                 pass
 
-    def _run_parallel(self, agents_map, common_args, on_progress, stage, max_workers=3):
+    def _run_parallel(self, agents_map, common_args, on_progress, stage, max_workers=2):
         """通用并行执行器：并行调用多个 Agent，收集结果
+
+        【v3.0 重要修复】默认 max_workers=2（从 3 调低）
+          背景：3 个 evaluator 同时调 LLM 会被 LLM 服务端限流/拒服，3 个一起 50s 超时。
+          修复：限制最多 2 个并发 + LLM retry × 3（1s/2s/4s 退避）双保险。
+
+        【v3.1】进度条修复：给每个 agent_start/complete 带递增的 percent。
+          - 假设调用方传入时上层已设定 stage_start = base，
+            每个 agent_start = base + i*step，
+            每个 agent_complete = base + step/2 + i*step
+          - 这样前端 bar 不会一直卡 75%，而是随 agent 推进平滑增长。
 
         Args:
             agents_map: {key: (name, func)} 字典
             common_args: 公共参数元组
             on_progress: 进度回调
             stage: 阶段名称
-            max_workers: 最大线程数
+            max_workers: 最大线程数（默认 2，避免 LLM 限流）
 
         Returns:
             dict: {key: result}
@@ -119,8 +141,17 @@ class AgentOrchestrator:
         results = {}
         start = time.time()
 
-        for key, (name, _) in agents_map.items():
-            self._emit(on_progress, 'agent_start', name, stage, f'{name}开始工作...')
+        # 【v3.1】准备阶段基线 + 每个 agent 的 percent 递增。
+        # 默认区间 [25, 65]，留给 stage_complete 上调到 75%。
+        n = max(1, len(agents_map))
+        base_pct = 25  # stage_start 已给出 10，本阶段从 25 起跳
+        step = max(1, int(40 / (n + 1)))  # n 个 agent 加 1 个 stage_complete 补齐到 ~75
+
+        agent_list = list(agents_map.items())
+        for i, (key, (name, _)) in enumerate(agent_list):
+            pct = base_pct + i * step
+            self._emit(on_progress, 'agent_start', name, stage,
+                       f'{name}开始工作...', percent=pct)
 
         app = current_app._get_current_object()
 
@@ -139,15 +170,18 @@ class AgentOrchestrator:
             for future in as_completed(futures):
                 key, name = futures[future]
                 elapsed = round(time.time() - start, 1)
+                # 按完成顺序拿到 i，再算 percent
+                i = next((idx for idx, (k, (n2, _)) in enumerate(agent_list) if k == key), 0)
+                pct = base_pct + step // 2 + i * step
                 try:
                     results[key] = future.result()
                     self._emit(on_progress, 'agent_complete', name, stage,
-                               f'{name}完成 ({elapsed}s)')
+                               f'{name}完成 ({elapsed}s)', percent=pct)
                 except Exception as e:
                     logger.error(f'[{name}] {stage}失败: {e}')
                     results[key] = None
                     self._emit(on_progress, 'agent_error', name, stage,
-                               f'{name}出错: {e}')
+                               f'{name}出错: {e}', percent=pct)
 
         return results
 
@@ -177,43 +211,123 @@ class AgentOrchestrator:
                         on_progress=None):
         """阶段2：三位评估师并行评估 + 汇总师综合
 
+        【v3.6 异步改造】隐藏维度评估师改异步
+          - 阶段 A：tech + soft 并发（限 120s）→ 先返回基础分给前端
+          - 阶段 B：hidden 单独跑（限 180s）→ 完成后增量更新隐性维度
+          - 解决：之前 3 个并发跑最慢的 hidden 评估师拖死整体（曾实测 60+ 秒）
+
         Returns:
-            dict: 统一简历画像
+            dict: 统一简历画像（带 _partial / _hidden_done 标记）
         """
-        self._emit(on_progress, 'stage_start', '', '简历评估', '三位评估师开始并行工作...')
-        
+        self._emit(on_progress, 'stage_start', '', '简历评估',
+                   '【v3.6】先跑技术+素质，隐性维度异步评估...', percent=20)
+
         common_args = (position_name, tech_requirements, jd_content, resume_text,
                        position_analysis, candidate_name)
-        
-        # 并行调用 3 个评估师
-        agents_map = {
+        position_requirements_text = (tech_requirements or '') + '\n' + (jd_content or '')
+
+        # ========== 阶段A：tech + soft 并发（限时 120s）==========
+        tech_soft_map = {
             'tech': ('技术评估师', self.tech_evaluator.evaluate),
             'soft': ('综合素质评估师', self.soft_evaluator.evaluate),
-            'hidden': ('隐性因素评估师', self.hidden_evaluator.evaluate),
         }
-        
-        results = self._run_parallel(agents_map, common_args, on_progress, '简历评估')
-        
-        # 汇总
-        self._emit(on_progress, 'agent_start', '简历汇总师', '简历评估', '正在综合三方意见...')
+        results = self._run_parallel(tech_soft_map, common_args, on_progress, '简历评估',
+                                     max_workers=2)
+
+        tech_r = results.get('tech')
+        soft_r = results.get('soft')
+
+        # 先汇总一次（hidden 给 None → 默认 60 中性分），作为 partial 结果
+        self._emit(on_progress, 'agent_start', '简历汇总师', '简历评估',
+                   '正在汇总技术+素质分数（基础分）...', percent=55)
+        partial = self.resume_coordinator.synthesize(
+            tech_r, soft_r, None,
+            position_name, candidate_name,
+            position_requirements_text=position_requirements_text,
+            resume_text=resume_text,
+        )
+        # partial 标记，前端据此先刷新基础分
+        if partial:
+            partial['_partial'] = True
+            partial['_hidden_done'] = False
+        # 【v3.6】将 partial 结果作为 payload 推送给 stream，前端先看基础分
+        partial_payload = {
+            'partial_result': partial if partial else None,
+        }
+        self._emit(on_progress, 'partial_complete', '简历汇总师', '简历评估',
+                   f'基础评估完成 (匹配度 {partial.get("match_score", "?") if partial else "?"}/100) '
+                   f'，隐性维度评估中...', percent=65,
+                   _extra=partial_payload)
+
+        # ========== 阶段B：hidden 单独跑（限时 180s）==========
+        # 用独立 executor，超时单独控制
+        import concurrent.futures
+        app = current_app._get_current_object()
+
+        def _wrap_single(f):
+            def wrapper(*args):
+                with app.app_context():
+                    return f(*args)
+            return wrapper
+
+        hidden_r = None
+        hidden_timed_out = False
+        self._emit(on_progress, 'agent_start', '隐性因素评估师', '简历评估',
+                   '开始评估隐性维度（9个维度加权）...', percent=68)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as hidden_ex:
+            f_h = hidden_ex.submit(_wrap_single(self.hidden_evaluator.evaluate), *common_args)
+            try:
+                hidden_r = f_h.result(timeout=180)
+                if not hidden_r or not isinstance(hidden_r, dict):
+                    hidden_r = None
+                    logger.warning('[v3.6] hidden 评估师返回为空')
+                else:
+                    self._emit(on_progress, 'agent_complete', '隐性因素评估师', '简历评估',
+                               '隐性维度评估完成', percent=80)
+            except concurrent.futures.TimeoutError:
+                hidden_timed_out = True
+                logger.error(f'[v3.6] hidden 评估师超时（180s 内未完成）')
+                self._emit(on_progress, 'agent_error', '隐性因素评估师', '简历评估',
+                           '隐性维度评估超时（>180s），将使用基础分（隐藏维度为中性 60）',
+                           percent=80)
+            except Exception as e:
+                logger.error(f'[v3.6] hidden 评估师异常: {e}')
+                self._emit(on_progress, 'agent_error', '隐性因素评估师', '简历评估',
+                           f'隐性维度评估异常: {e}', percent=80)
+
+        # ========== 最终汇总（带 hidden）==========
+        self._emit(on_progress, 'agent_start', '简历汇总师', '简历评估',
+                   '综合三方意见（含隐性维度）...', percent=85)
         start_coord = time.time()
         result = self.resume_coordinator.synthesize(
-            results.get('tech'), results.get('soft'), results.get('hidden'),
-            position_name, candidate_name
+            tech_r, soft_r, hidden_r,
+            position_name, candidate_name,
+            position_requirements_text=position_requirements_text,
+            resume_text=resume_text,
         )
         elapsed_coord = round(time.time() - start_coord, 1)
-        
+
+        # 是否完整（hidden 是否带数据）
+        hidden_complete = bool(hidden_r and (
+            hidden_r.get('candidate_profile')
+            or hidden_r.get('hidden_score_breakdown')
+            or hidden_r.get('implicit_requirement_mapping')
+        ))
+        if result and isinstance(result, dict):
+            result['_partial'] = False
+            result['_hidden_done'] = hidden_complete
+            result['_hidden_timed_out'] = hidden_timed_out
+
         self._emit(on_progress, 'agent_complete', '简历汇总师', '简历评估',
-                   f'简历汇总完成 ({elapsed_coord}s)')
+                   f'最终汇总完成 ({elapsed_coord}s)', percent=95)
         self._emit(on_progress, 'stage_complete', '', '简历评估', '简历评估阶段完成')
-        
+
         # 强制合并隐性评估师的原始详细数据（双保险：Prompt + 代码层）
         if result and isinstance(result, dict):
-            hidden_raw = results.get('hidden') or {}
-            # 强制覆盖 candidate_profile（确保详细嵌套结构不丢失）
+            hidden_raw = hidden_r or {}
+            # 强制覆盖 candidate_profile
             hidden_profile = hidden_raw.get('candidate_profile')
             if hidden_profile and isinstance(hidden_profile, dict):
-                # 检查汇总师的输出是否丢失了详细字段
                 coord_profile = result.get('candidate_profile')
                 if not coord_profile or not isinstance(coord_profile, dict) or \
                    len(coord_profile) < len(hidden_profile):
@@ -225,15 +339,28 @@ class AgentOrchestrator:
                 if not coord_mapping or not isinstance(coord_mapping, list) or \
                    len(coord_mapping) < len(hidden_mapping):
                     result['implicit_requirement_mapping'] = hidden_mapping
-        
-        # 附加各专家的原始结果（供后续阶段参考）
+
+        # 附加各专家的原始结果
         if result and isinstance(result, dict):
             result['_expert_details'] = {
-                'tech': results.get('tech'),
-                'soft': results.get('soft'),
-                'hidden': results.get('hidden'),
+                'tech': tech_r,
+                'soft': soft_r,
+                'hidden': hidden_r,
             }
-        
+
+        # 【v3.6】除了返回最终结果，同时返回 partial 结果给上层（stream）以便分两次 yield。
+        # 但是为了不破坏其他调用者（design_questions 等依赖 return 字典作为 _final_），
+        # 这里仍然返回 result（最终汇总）作为主返回值。partial 结果通过 _partial_result 字段附带。
+        if result and isinstance(result, dict) and isinstance(partial, dict):
+            # partial 副本（避免主结果被覆盖）
+            partial_copy = {
+                **partial,
+                '_partial': True,
+                '_hidden_done': False,
+                '_partial_marker': True,
+            }
+            result['_partial_result'] = partial_copy
+
         return result
 
     # ===== 阶段3：出题（3并行+1选题）=====
@@ -337,8 +464,13 @@ class AgentOrchestrator:
     # ===== 阶5：面试评价（3并行+1汇总）=====
     def generate_report(self, position_name, tech_requirements,
                         candidate_name, full_dialogs, questions_plan=None,
+                        single_round_scores=None,
                         on_progress=None):
         """阶5：三位评估师并行评估 + 汇总师生成最终报告
+
+        Args:
+            single_round_scores: 【新增】每条对话的实时评分（1-10），会传给汇总师。
+                                  为 None 或空列表时退回到纯汇总师 5 维算法。
 
         Returns:
             dict: 面试评价报告
@@ -361,7 +493,8 @@ class AgentOrchestrator:
         start_coord = time.time()
         result = self.interview_eval_coord.synthesize(
             results.get('project'), results.get('tech'), results.get('soft'),
-            position_name, candidate_name
+            position_name, candidate_name,
+            single_round_scores=single_round_scores,
         )
         elapsed_coord = round(time.time() - start_coord, 1)
         
@@ -567,20 +700,40 @@ class AgentOrchestrator:
                     resume_match_score = None
 
             # 5. 【系统计算】综合得分 & 招聘建议
-            final_score = ComprehensiveMetaEvaluatorAgent.compute_overall_score(
+            #    【设计修复】应用跨阶段一致性惩罚，让简历「说好」但面试「差」的不一致
+            #    真正反映在最终分数里（仅靠加权求和会被掩盖）。
+            final_score, penalty = ComprehensiveMetaEvaluatorAgent.compute_overall_score_with_validation(
+                resume_match_score=resume_match_score,
+                round_scores_100=round_scores,
+                cross_stage_analysis=result.get('cross_stage_analysis'),
+                key_risks=result.get('key_risks'),
+            )
+            final_recommendation = ComprehensiveMetaEvaluatorAgent.recommendation_for(final_score)
+
+            # 原始分（未扣惩罚），供决策理由中展示扣分幅度
+            raw_score = ComprehensiveMetaEvaluatorAgent.compute_overall_score_raw(
                 resume_match_score=resume_match_score,
                 round_scores_100=round_scores,
             )
-            final_recommendation = ComprehensiveMetaEvaluatorAgent.recommendation_for(final_score)
 
             # 检测 LLM 是否填了占位字符串，如果是则用系统生成
             _PLACEHOLDERS = {'系统自动生成', '系统生成', '由系统填充', '由系统填入', '系统填入'}
             llm_rationale = (result.get('decision_rationale') or '').strip()
             if llm_rationale and llm_rationale not in _PLACEHOLDERS:
                 decision_rationale = llm_rationale
+                # 若系统计算了扣分，在 LLM 提供的理由后追加扣分说明
+                if penalty > 0:
+                    penalty_note = ComprehensiveMetaEvaluatorAgent._format_penalty_note(
+                        penalty,
+                        result.get('cross_stage_analysis'),
+                        result.get('key_risks'),
+                    )
+                    decision_rationale = decision_rationale + penalty_note
             else:
-                decision_rationale = ComprehensiveMetaEvaluatorAgent.decision_rationale_for(
-                    final_score, round_scores, resume_match_score,
+                decision_rationale = ComprehensiveMetaEvaluatorAgent.decision_rationale_for_with_validation(
+                    raw_score, final_score, round_scores, resume_match_score,
+                    result.get('cross_stage_analysis'),
+                    result.get('key_risks'),
                 )
 
             # 6. 覆写 LLM 可能误填的字段（防虚高）
@@ -588,7 +741,7 @@ class AgentOrchestrator:
             result['final_recommendation'] = final_recommendation
             result['decision_rationale'] = decision_rationale
 
-            # 7. 注入 computation 调试字段
+            # 7. 注入 computation 调试字段（增加跨阶段一致性惩罚明细）
             result['computation'] = {
                 'resume_match_score': resume_match_score,
                 'round_scores': round_scores,
@@ -596,6 +749,8 @@ class AgentOrchestrator:
                     resume_match_score=resume_match_score,
                     round_scores_100=round_scores,
                 ),
+                'cross_validation_penalty': penalty,
+                'final_score_after_penalty': final_score,
                 'n_rounds': len(round_scores),
             }
 

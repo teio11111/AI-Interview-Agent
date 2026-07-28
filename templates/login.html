@@ -50,16 +50,7 @@
         <div class="login-header">
             <i class="bi bi-robot" style="font-size:2.5rem;"></i>
             <h4 class="mt-2 mb-1">AI Interview Agent</h4>
-            <small class="opacity-75">智能面试辅助系统</small>
-        </div>
-
-        <div class="d-flex border-bottom">
-            <button class="tab-btn active" id="tabAdmin" onclick="switchTab('admin')">
-                <i class="bi bi-shield-lock me-1"></i> 管理员
-            </button>
-            <button class="tab-btn" id="tabCand" onclick="switchTab('candidate')">
-                <i class="bi bi-person me-1"></i> 候选人
-            </button>
+            <small class="opacity-75">管理员控制台</small>
         </div>
 
         <!-- 管理员登录 -->
@@ -76,41 +67,12 @@
                 <i class="bi bi-box-arrow-in-right me-1"></i> 登 录
             </button>
         </div>
-
-        <!-- 候选人 -->
-        <div class="form-section d-none" id="candForm">
-            <ul class="nav nav-pills mb-3 justify-content-center" id="candTabs">
-                <li class="nav-item">
-                    <a class="nav-link active" href="#" onclick="switchCandMode('login', event)">登录</a>
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" href="#" onclick="switchCandMode('register', event)">注册</a>
-                </li>
-            </ul>
-            <div class="mb-3">
-                <label class="form-label fw-bold">用户名</label>
-                <input type="text" class="form-control" id="candUser" placeholder="用户名">
-            </div>
-            <div class="mb-3">
-                <label class="form-label fw-bold">密码</label>
-                <input type="password" class="form-control" id="candPass" placeholder="密码">
-            </div>
-            <div class="mb-3 d-none" id="candNameGroup">
-                <label class="form-label fw-bold">真实姓名</label>
-                <input type="text" class="form-control" id="candName" placeholder="您的真实姓名">
-            </div>
-            <button class="btn btn-primary btn-auth w-100 text-white" id="candBtn" onclick="doCandAction()">
-                <i class="bi bi-box-arrow-in-right me-1"></i> 登 录
-            </button>
-        </div>
     </div>
 
     <div class="toast-container" id="toastContainer"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        let candMode = 'login';
-
         function showToast(msg, type = 'danger') {
             const c = document.getElementById('toastContainer');
             const t = document.createElement('div');
@@ -133,21 +95,7 @@
         }
 
         function switchTab(tab) {
-            document.getElementById('tabAdmin').classList.toggle('active', tab === 'admin');
-            document.getElementById('tabCand').classList.toggle('active', tab === 'candidate');
-            document.getElementById('adminForm').classList.toggle('d-none', tab !== 'admin');
-            document.getElementById('candForm').classList.toggle('d-none', tab !== 'candidate');
-        }
-
-        function switchCandMode(mode, e) {
-            e.preventDefault();
-            candMode = mode;
-            document.querySelectorAll('#candTabs .nav-link').forEach(l => l.classList.remove('active'));
-            e.target.classList.add('active');
-            document.getElementById('candNameGroup').classList.toggle('d-none', mode !== 'register');
-            document.getElementById('candBtn').innerHTML = mode === 'register'
-                ? '<i class="bi bi-person-plus me-1"></i> 注 册'
-                : '<i class="bi bi-box-arrow-in-right me-1"></i> 登 录';
+            // 保留函数避免历史书签引用报错，实际不再使用
         }
 
         async function doLogin(role) {
@@ -174,40 +122,8 @@
             }
         }
 
-        async function doCandAction() {
-            const btn = document.getElementById('candBtn');
-            const user = document.getElementById('candUser').value.trim();
-            const pass = document.getElementById('candPass').value;
-            if (!user || !pass) return showToast('请填写用户名和密码');
-            setLoading(btn, true);
-            try {
-                const url = candMode === 'register' ? '/api/auth/register' : '/api/auth/login';
-                const body = { username: user, password: pass };
-                if (candMode === 'register') {
-                    const name = document.getElementById('candName').value.trim();
-                    if (!name) { setLoading(btn, false); return showToast('请填写真实姓名'); }
-                    body.real_name = name;
-                }
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                }).then(r => r.json());
-                setLoading(btn, false);
-                if (res.code === 200) {
-                    window.location.href = res.data.redirect;
-                } else {
-                    showToast(res.message || '操作失败');
-                }
-            } catch (e) {
-                setLoading(btn, false);
-                showToast('网络错误');
-            }
-        }
-
         // Enter 键提交
         document.getElementById('adminPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin('admin'); });
-        document.getElementById('candPass').addEventListener('keydown', e => { if (e.key === 'Enter') doCandAction(); });
     </script>
 </body>
 </html>

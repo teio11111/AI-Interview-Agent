@@ -1,5 +1,6 @@
 """短板探测出题官 Agent - 专注短板探测与场景设计题"""
 from agents.base_agent import BaseAgent
+from utils.text_truncate import truncate_for_prompt
 
 
 class WeaknessQuestionerAgent(BaseAgent):
@@ -42,6 +43,9 @@ class WeaknessQuestionerAgent(BaseAgent):
         Returns:
             dict: 1-2道短板探测题 + 1道场景设计题
         """
+        pos_sum = truncate_for_prompt(self.summarize(position_analysis), max_chars=2500)
+        resume_sum = truncate_for_prompt(self.summarize(resume_analysis), max_chars=2500)
+
         prompt = f"""## 任务
 你是短板探测出题官。请设计 1-2 道**短板探测题**和 1 道**场景设计题**。
 
@@ -53,11 +57,11 @@ class WeaknessQuestionerAgent(BaseAgent):
 - 岗位名称：{position_name}
 - 技术要求：{tech_requirements or ''}
 
-## 岗位分析师的分析结果
-{self.summarize(position_analysis)}
+## 岗位分析师的分析结果（摘要）
+{pos_sum}
 
-## 简历评估师的评估结果（重点关注 risks, missing_skills）
-{self.summarize(resume_analysis)}
+## 简历评估师的评估结果（摘要，重点关注 risks, missing_skills）
+{resume_sum}
 
 ## 候选人简历原文
 {resume_text or '暂无'}

@@ -10,6 +10,7 @@
     .module-card.position { border-left-color: #4f46e5; }
     .module-card.candidate { border-left-color: #7c3aed; }
     .module-card.interview { border-left-color: #06b6d4; }
+    .module-card.live { border-left-color: #f59e0b; }
 </style>
 {% endblock %}
 
@@ -61,7 +62,7 @@
 <!-- 模块入口 -->
 <h5 class="mb-3 text-muted">功能模块</h5>
 <div class="row g-3 mb-4">
-    <div class="col-md-4">
+    <div class="col-md-3 col-sm-6">
         <div class="card module-card position h-100" onclick="location.href='/positions'">
             <div class="card-body d-flex align-items-center gap-3">
                 <div class="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width:48px;height:48px;background:rgba(79,70,229,0.1);">
@@ -75,7 +76,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3 col-sm-6">
         <div class="card module-card candidate h-100" onclick="location.href='/candidates'">
             <div class="card-body d-flex align-items-center gap-3">
                 <div class="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width:48px;height:48px;background:rgba(124,58,237,0.1);">
@@ -89,7 +90,21 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3 col-sm-6">
+        <div class="card module-card live h-100" onclick="location.href='/live-interview'">
+            <div class="card-body d-flex align-items-center gap-3">
+                <div class="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width:48px;height:48px;background:rgba(245,158,11,0.1);">
+                    <i class="bi bi-broadcast" style="font-size:1.5rem;color:#f59e0b;"></i>
+                </div>
+                <div>
+                    <h6 class="mb-1">实时面试</h6>
+                    <small class="text-muted">流式对话 → AI实时分析 → 智能追问</small>
+                </div>
+                <i class="bi bi-chevron-right ms-auto text-muted"></i>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
         <div class="card module-card interview h-100" onclick="location.href='/interview'">
             <div class="card-body d-flex align-items-center gap-3">
                 <div class="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width:48px;height:48px;background:rgba(6,182,212,0.1);">
@@ -148,6 +163,54 @@
         </div>
     </div>
 </div>
+
+<!-- 更新日志（默认折叠，点「显示」按钮展开；每个版本可独立展开 items） -->
+{% if changelog_versions %}
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-journal-text me-1"></i>更新日志</span>
+        <small class="text-muted">
+            最近 {{ changelog_versions|length }} 个版本
+            <button class="btn btn-sm btn-outline-primary ms-2" type="button"
+                    id="btnToggleChangelog"
+                    data-bs-toggle="collapse" data-bs-target="#changelogContent"
+                    aria-expanded="false" aria-controls="changelogContent">
+                <i class="bi bi-chevron-down me-1"></i>显示
+            </button>
+        </small>
+    </div>
+    <div class="collapse" id="changelogContent">
+        <div class="card-body">
+            {% for v in changelog_versions[:3] %}
+            <div class="mb-2 {% if not loop.last %}pb-2 border-bottom{% endif %}">
+                <div class="d-flex justify-content-between align-items-center py-1 px-2 rounded bg-light-subtle changelog-version-header"
+                     style="cursor:pointer;"
+                     data-bs-toggle="collapse" data-bs-target="#verItems{{ loop.index }}"
+                     aria-expanded="false" aria-controls="verItems{{ loop.index }}">
+                    <div class="d-flex align-items-center gap-2 flex-grow-1" style="min-width:0;">
+                        <i class="bi bi-chevron-right text-muted small verItemsIcon" id="verItemsIcon{{ loop.index }}"></i>
+                        <strong class="text-primary">{{ v.version }}</strong>
+                        <span class="badge bg-{{ v.tag_color }}">{{ v.tag }}</span>
+                        <span class="fw-bold text-truncate">{{ v.title }}</span>
+                    </div>
+                    <small class="text-muted flex-shrink-0 ms-2">{{ v.date }}</small>
+                </div>
+                <div class="collapse mt-2" id="verItems{{ loop.index }}">
+                    <ul class="mb-0 small text-secondary ps-3 mb-2" style="line-height: 1.7;">
+                        {% for item in v['items'] %}
+                        <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+            {% endfor %}
+            <div class="text-end mt-2">
+                <small class="text-muted">详细变更历史请查看项目根目录 <code>CHANGELOG.md</code></small>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
@@ -176,5 +239,41 @@ async function loadStats() {
 }
 
 loadStats();
+
+// === 更新日志折叠交互 ===
+(function() {
+    // 外层 「显示/收起」 按钮图标切换
+    const toggleBtn = document.getElementById('btnToggleChangelog');
+    const contentEl = document.getElementById('changelogContent');
+    if (toggleBtn && contentEl) {
+        contentEl.addEventListener('show.bs.collapse', () => {
+            toggleBtn.innerHTML = '<i class="bi bi-chevron-up me-1"></i>收起';
+        });
+        contentEl.addEventListener('hide.bs.collapse', () => {
+            toggleBtn.innerHTML = '<i class="bi bi-chevron-down me-1"></i>显示';
+        });
+    }
+
+    // 每个版本 items 展开/收起 → 右侧箭头旋转
+    document.querySelectorAll('[id^="verItems"]').forEach(el => {
+        if (!el.id.startsWith('verItems')) return;
+        // 跳过外层父元素 id 为 verItemsX 的（同一前缀）
+        // 这里只关心数字 id（verItems1/2/3）
+        if (!/^verItems\d+$/.test(el.id)) return;
+
+        const iconId = 'verItemsIcon' + el.id.replace('verItems', '');
+        const iconEl = document.getElementById(iconId);
+        if (!iconEl) return;
+
+        el.addEventListener('show.bs.collapse', () => {
+            iconEl.classList.remove('bi-chevron-right');
+            iconEl.classList.add('bi-chevron-down');
+        });
+        el.addEventListener('hide.bs.collapse', () => {
+            iconEl.classList.remove('bi-chevron-down');
+            iconEl.classList.add('bi-chevron-right');
+        });
+    });
+})();
 </script>
 {% endblock %}

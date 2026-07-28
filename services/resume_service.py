@@ -8,19 +8,21 @@ class ResumeService:
     """简历分析服务（委托给简历评估师 Agent）"""
 
     @staticmethod
-    def analyze_resume(position, resume_text, candidate_name=''):
+    def analyze_resume(position, resume_text, candidate_name='', on_progress=None):
         """分析简历与岗位的匹配度
 
         Args:
             position: Position 模型对象
             resume_text: 简历文本
+            candidate_name: 候选人姓名
+            on_progress: 【v3.1 新增】进度回调，传给 Agent 编排器以便 SSE 实时推送 agent_start/complete。
 
         Returns:
             dict: 分析结果（含 match_score），失败返回 None
         """
         from services.interview_service import get_orchestrator
         orch = get_orchestrator()
-        
+
         # 解析岗位分析结果（含隐性需求），传给简历评估师做对照
         position_analysis = None
         if position.ai_analysis:
@@ -28,14 +30,15 @@ class ResumeService:
                 position_analysis = json.loads(position.ai_analysis) if isinstance(position.ai_analysis, str) else position.ai_analysis
             except (json.JSONDecodeError, TypeError):
                 logger.warning('岗位分析结果解析失败，简历评估将不包含隐性条件对照')
-        
+
         result = orch.evaluate_resume(
             position.name,
             position.tech_requirements or '',
             position.jd_content or '',
             resume_text,
             position_analysis,
-            candidate_name
+            candidate_name,
+            on_progress=on_progress,
         )
 
         if result:

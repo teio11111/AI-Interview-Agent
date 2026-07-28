@@ -18,12 +18,12 @@ class BaseAgent:
         if not self.SYSTEM_PROMPT:
             raise ValueError(f"{self.AGENT_NAME} 未定义 SYSTEM_PROMPT")
 
-    def think(self, prompt, temperature=0.7):
+    def think(self, prompt, temperature=0.2):
         """执行思考（调用 LLM）
 
         Args:
             prompt: 任务指令（已填充数据的完整 prompt）
-            temperature: 创造性参数（0-1）
+            temperature: 创造性参数（0-1）。评估/分析任务统一 0.2 保证稳定性。
 
         Returns:
             str: LLM 原始响应文本
@@ -36,7 +36,7 @@ class BaseAgent:
             logger.error(f'[{self.AGENT_NAME}] 思考失败')
         return response
 
-    def think_json(self, prompt, temperature=0.7):
+    def think_json(self, prompt, temperature=0.2):
         """执行思考并返回结构化 JSON
 
         Args:

@@ -32,6 +32,15 @@ desktop.ini
 # Test artifacts
 test_*.png
 test_*.py
+_*.py
+_*.txt
+_*.png
+
+# 测试用 PDF 简历 / JD（不入库）
+DGT-java*.pdf
+Java工程师岗位JD.pdf
+*岗位JD.pdf
+*一面*.pdf
 
 # Logs
 *.log
@@ -41,6 +50,14 @@ flask.log.bak
 # 部署产物（按需生成，不入库）
 deploy.zip
 deploy_lastest.zip
+ai-interview_*.zip
+
+# 调试 / 上传残留
+cookies.txt
+login.json
+login_page.png
+pdf_upload_modal.png
+dashboard_top.png
 
 # 测试截图
 check_cands.png

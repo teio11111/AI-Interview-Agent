@@ -17,14 +17,18 @@ stream_bp = Blueprint('stream', __name__, url_prefix='/api/stream')
 
 
 def _sse_response(generator_fn):
-    """包装 SSE 响应"""
+    """包装 SSE 响应
+
+    【v3.1 修复】去掉 'Connection: close' 头——
+    waitress 严格遵循 PEP 3333，拒绝 WSGI 应用设置 hop-by-hop 头，会报 AssertionError。
+    waitress 默认会用 keep-alive，浏览器原生支持 SSE 不需要显式 Connection: close。
+    """
     return Response(
         stream_with_context(generator_fn()),
         mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
-            'Connection': 'close',
         }
     )
 
@@ -38,14 +42,14 @@ def _sse_event(event_type, data):
 def _create_progress_bridge():
     """创建进度桥接器：回调 → 队列 → SSE 生成器"""
     q = queue.Queue()
-    
+
     def on_progress(event_type, data):
         """回调函数，编排器调用"""
         try:
             q.put({'event': event_type, **data}, timeout=1)
         except Exception:
             pass
-    
+
     return q, on_progress
 
 
@@ -164,7 +168,15 @@ def stream_resume_evaluation(candidate_id):
 @stream_bp.route('/candidate-analysis/<int:candidate_id>', methods=['POST'])
 @login_required(role='admin')
 def stream_candidate_analysis(candidate_id):
-    """SSE: 候选人分析全流水线（简历评估 → 出题 → 创建会话）"""
+    """SSE: 候选人分析全流水线（v2.2 重构【同步仅简历评估 + 兑底题、LLM 出题后台异步】）
+
+    设计：
+      阶段A 【同步、必须完成】简历评估（3并行 + 1汇总）→ ~30-35s
+      阶段B 【同步、<0.5s】兑底题目生成 → 主线程不等待 LLM
+      阶段C 【后台异步】LLM 真出题，由 daemon 线程跑，跑完后写 session.questions_plan
+
+    SSE 超时：【v3.3】120s 强制 yield error，1分钟后前端预警提示用户“分析时间偏长”。
+    """
     candidate = CandidateRepository.find_by_id(candidate_id)
     if not candidate:
         return error('候选人不存在', 404)
@@ -182,53 +194,121 @@ def stream_candidate_analysis(candidate_id):
             pass
 
     def generate():
+        # 【v3.6】在 generate 函数顶部 explictily import，避免嵌套 worker() 闪 free variable 错误。
+        # （Python 闭包+ inline from-import 会让 worker 无法解析外层作用域的 CandidateRepository）
+        from repositories.candidate_repository import CandidateRepository
+        from repositories.position_repository import PositionRepository
+        import time
         q, on_progress = _create_progress_bridge()
         app = current_app._get_current_object()
-        result_holder = {'resume': None, 'questions': None, 'session': None, 'error': None}
+        result_holder = {
+            'resume': None,
+            'session_dict': None,
+            'error': None,
+            'completed_at_step': None,
+            'partial_resume': None,       # 【v3.6】partial 结果（tech+soft）
+            'partial_saved_at_step': None, # 【v3.6】partial 是否已写入人库
+        }
+        # 【v3.6】SSE 超时 320s = 120(基础) + 180(hidden) + 20(buffer)
+        # 阶段 A: tech+soft ≤120s 后 yield partial_complete（推前端）并入友
+        # 阶段 B: hidden 单独跑 ≤180s
+        # 总 SSE 保持连接直到 2 阶段都完成，避免前端误以为“卡住了”
+        SSE_TIMEOUT = 320
+        # 前端预警阈值（60s）：此处仅作文档化，实际由前端独立计时。
+        SLOW_WARNING_AT = 60
 
         def worker():
+            """后台 worker：跑同步简历评估"""
+            # 【v3.6】在 worker 函数顶部直接 inline import，避免让 worker 闪
+            # "imports not allowed at top of function" 带来 other-name free variable 问题
+            from services.resume_service import ResumeService
             with app.app_context():
                 try:
-                    # 在 worker 线程内重新加载对象，避免跨线程 DetachedInstanceError
                     cand = CandidateRepository.find_by_id(candidate_id)
                     pos = PositionRepository.find_by_id(cand.position_id)
-                    
-                    # 阶段A: 简历评估 (3+1)
-                    from services.resume_service import ResumeService
+
+                    # 【v3.1】手动推送阶段进度事件（调整初始 percent 以配合缓动）
+                    q.put({'event': 'progress', 'stage': '简历评估',
+                           'agent': 'AI 调度员',
+                           'message': '简历评估启动，三位评估师并行分析中…',
+                           'percent': 15})
+
+                    # 阶段A: 简历评估（同步必须完成）
                     result_holder['resume'] = ResumeService.analyze_resume(
-                        pos, cand.resume_text, cand.name
+                        pos, cand.resume_text, cand.name, on_progress=on_progress,
                     )
                     if not result_holder['resume']:
                         result_holder['error'] = '简历评估失败'
                         return
-                    # 保存简历分析结果
+                    result_holder['completed_at_step'] = 'resume_eval_done'
+
+                    # 【v3.1】进度推送：汇总师完成 ⇒ 75%
+                    q.put({'event': 'progress', 'stage': '简历评估',
+                           'agent': '简历汇总师',
+                           'message': '简历汇总完成',
+                           'percent': 75})
+
+                    # 保存简历评估结果（v2.2 LLM 全面失败时 match_score=0）
+                    is_llm_failed = bool(result_holder['resume'].get('llm_fully_failed'))
                     cand.ai_analysis = json.dumps(result_holder['resume'], ensure_ascii=False)
-                    cand.match_score = result_holder['resume'].get('match_score', 0)
+                    cand.match_score = 0 if is_llm_failed else result_holder['resume'].get('match_score', 0)
                     CandidateRepository.update(cand)
 
-                    # 阶段B: 出题 (3+1)
-                    pos_analysis = None
-                    if pos.ai_analysis:
-                        try:
-                            pos_analysis = json.loads(pos.ai_analysis) if isinstance(pos.ai_analysis, str) else pos.ai_analysis
-                        except Exception:
-                            pass
-                    
-                    result_holder['questions'] = InterviewService.generate_questions(
-                        pos, cand, pos_analysis,
-                        result_holder['resume'], cand.resume_text,
-                        on_progress=on_progress
+                    q.put({'event': 'progress', 'stage': '兑底题目',
+                           'agent': '题目模板',
+                           'message': '正在生成兜底面试题（保证 5 道题立即可用）…',
+                           'percent': 80})
+
+                    # 阶段B: 同步生成兑底题目（不调 LLM，<0.5s）
+                    from services.interview_service import InterviewService
+                    fallback_questions = InterviewService.generate_fallback_questions(
+                        pos, cand.resume_text
                     )
-                    if result_holder['questions']:
-                        # 创建面试会话
-                        session = InterviewSession(
-                            candidate_id=cand.id,
-                            status=SessionStatus.PREPARING,
-                            questions_plan=json.dumps(result_holder['questions'], ensure_ascii=False)
+                    sess = InterviewSession(
+                        candidate_id=cand.id,
+                        status=SessionStatus.PREPARING,
+                        questions_plan=json.dumps(fallback_questions, ensure_ascii=False)
+                    )
+                    InterviewRepository.save_session(sess)
+                    result_holder['session_dict'] = sess.to_dict()
+                    result_holder['completed_at_step'] = 'fallback_session_created'
+                    result_holder['fallback_session'] = sess  # 【v3.6.5】保存引用，便于覆盖
+
+                    q.put({'event': 'progress', 'stage': '兑底题目',
+                           'agent': '题目模板',
+                           'message': '兜底面试题已生成',
+                           'percent': 95})
+
+                    # 【v3.6.5 同步保险】同步调用 LLM 真出题，覆盖兜底题。
+                    # waitess 8 worker 下 daemon thread 时灵时不灵，状态可能卡在兜底题。
+                    # 此处 SSE_TIMEOUT=320s 充中， LLM 出题≈60-90s 可安全同步等。
+                    try:
+                        q.put({'event': 'progress', 'stage': '精修出题',
+                               'agent': 'AI 调度员',
+                               'message': 'AI 正在精修题目，让问题贴合候选人简历…',
+                               'percent': 97})
+                        refined = InterviewService.generate_questions(
+                            pos, cand, pos.ai_analysis, cand.ai_analysis,
+                            cand.resume_text,
                         )
-                        InterviewRepository.save_session(session)
-                        # 在 worker 线程内序列化 session，避免 DetachedInstanceError
-                        result_holder['session_dict'] = session.to_dict()
+                        if refined and isinstance(refined, dict) and refined.get('questions'):
+                            sess.questions_plan = json.dumps(refined, ensure_ascii=False)
+                            InterviewRepository.update_session(sess)
+                            result_holder['session_dict'] = sess.to_dict()
+                            result_holder['completed_at_step'] = 'refined_session_updated'
+                            logger.info(
+                                f'[v3.6.5 SSE] LLM 精修出题成功: candidate={cand.name}, '
+                                f'session={sess.id}, questions={len(refined["questions"])}'
+                            )
+                        else:
+                            logger.warning(
+                                f'[v3.6.5 SSE] LLM 精修返回为空,保留兑底题: '
+                                f'candidate={cand.name}, session={sess.id}'
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f'[v3.6.5 SSE] LLM 精修异常: candidate={cand.name}, error={e}'
+                        )
                 except Exception as e:
                     result_holder['error'] = str(e)
                 finally:
@@ -236,13 +316,57 @@ def stream_candidate_analysis(candidate_id):
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
+        start_time = time.time()
 
         while True:
+            # 超时控制：超过 120s 强制 yield error
+            elapsed = time.time() - start_time
+            if elapsed > SSE_TIMEOUT:
+                result_holder['error'] = (
+                    f'简历分析超过 2 分钟未返回，可能是 LLM 服务忙或简历过长。'
+                    f'请稍后重试，或检查网络/服务状态。'
+                )
+                logger.warning(
+                    f'[stream_candidate_analysis] SSE 超时 {elapsed:.1f}s > {SSE_TIMEOUT}s，'
+                    f'candidate_id={candidate_id}'
+                )
+                break
+
             try:
-                event = q.get(timeout=300)
+                event = q.get(timeout=1)
                 if event == '__DONE__':
                     break
-                yield _sse_event('progress', event)
+                # 【v3.6】partial_complete 事件需要额外推给前端，让前端提前显示基础分
+                if isinstance(event, dict) and event.get('event') == 'partial_complete':
+                    # 先让进度 UI 更新
+                    yield _sse_event('progress', event)
+                    # 接着推一个独立的 partial_complete 事件供前端 modal 使用
+                    yield _sse_event('partial_complete', {
+                        'partial_result': event.get('partial_result'),
+                        'percent': event.get('percent', 65),
+                    })
+                    # 在 partial 阶段同时把基础结果写入人库，避免候选人列表还是「待分析」
+                    if result_holder.get('partial_saved_at_step') != 'partial_saved':
+                        try:
+                            # CandidateRepository / PositionRepository 已在模块顶部导入
+                            partial_res = event.get('partial_result') or {}
+                            if partial_res:
+                                cand_now = CandidateRepository.find_by_id(candidate_id)
+                                pos_now = PositionRepository.find_by_id(cand_now.position_id) if cand_now else None
+                                if cand_now:
+                                    cand_now.ai_analysis = json.dumps(partial_res, ensure_ascii=False)
+                                    is_fail = bool(partial_res.get('llm_fully_failed'))
+                                    cand_now.match_score = 0 if is_fail else partial_res.get('match_score', 0)
+                                    CandidateRepository.update(cand_now)
+                                    result_holder['partial_saved_at_step'] = 'partial_saved'
+                                    logger.info(
+                                        f'[v3.6] partial 结果已入友 candidate={cand_now.name} '
+                                        f'score={cand_now.match_score}'
+                                    )
+                        except Exception as _e:
+                            logger.warning(f'[v3.6] partial 入友失败: {_e}')
+                else:
+                    yield _sse_event('progress', event)
             except queue.Empty:
                 yield f": keepalive\n\n"
 
@@ -251,7 +375,7 @@ def stream_candidate_analysis(candidate_id):
         elif result_holder['resume']:
             yield _sse_event('complete', {
                 'result': result_holder['resume'],
-                'session': result_holder.get('session_dict')
+                'session': result_holder.get('session_dict'),
             })
         else:
             yield _sse_event('error', {'message': '候选人分析失败'})
@@ -431,6 +555,21 @@ def stream_report_generation(session_id):
         for d in dialogs
     ]
 
+    # 【Bug 修复】提取每条对话的实时评分（1-10）用于汇总师综合分计算
+    # 避免“单轮都 2 分但综合分 41”这种脱钩问题。
+    single_round_scores = []
+    for d in dialogs:
+        if not d.ai_feedback:
+            continue
+        try:
+            fb = json.loads(d.ai_feedback) if isinstance(d.ai_feedback, str) else d.ai_feedback
+        except (json.JSONDecodeError, TypeError):
+            continue
+        score = (fb or {}).get('score')
+        if isinstance(score, (int, float)) and 1 <= score <= 10:
+            single_round_scores.append(score)
+    logger.info(f'[stream_report] 提取到 {len(single_round_scores)} 条单轮评分: {single_round_scores}')
+
     # 解析出题策略
     questions_plan = None
     if session.questions_plan:
@@ -493,6 +632,7 @@ def stream_report_generation(session_id):
                     result = InterviewService.generate_report(
                         position, candidate.name, full_text,
                         questions_plan=questions_plan,
+                        single_round_scores=single_round_scores,
                         on_progress=on_progress
                     )
                     # 附加板块信息到报告（供前端一次性渲染使用）

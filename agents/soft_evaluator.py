@@ -1,5 +1,6 @@
 """综合素质评估师 Agent - 专注软技能与综合素质评估"""
 from agents.base_agent import BaseAgent
+from utils.text_truncate import truncate_for_prompt, clean_resume_text
 
 
 class SoftEvaluatorAgent(BaseAgent):
@@ -49,6 +50,10 @@ class SoftEvaluatorAgent(BaseAgent):
             if ss:
                 pos_soft = json.dumps(ss, ensure_ascii=False)
 
+        # 清理 + 截断长简历 / JD（v2.0 修复）
+        safe_resume = truncate_for_prompt(clean_resume_text(resume_text or ''), max_chars=3000)
+        safe_jd = truncate_for_prompt(jd_content or '', max_chars=1500)
+
         prompt = f"""## 任务
 你是综合素质评估师，请**只从软技能和综合素质角度**评估候选人。
 不要评估具体技术能力，专注评估沟通、协作、学习、领导力等软性素质。
@@ -60,10 +65,10 @@ class SoftEvaluatorAgent(BaseAgent):
 **岗位名称：** {position_name}
 **岗位期望的软技能：** {pos_soft or '未明确'}
 **JD 全文：**
-{jd_content or '暂无详细JD'}
+{safe_jd or '暂无详细JD'}
 
 ## 候选人简历
-{resume_text or '暂无'}
+{safe_resume or '暂无'}
 
 ## 评估要求
 
@@ -94,6 +99,14 @@ class SoftEvaluatorAgent(BaseAgent):
 - 是否有主动优化、改进的记录
 - 项目成果是否有量化数据
 - 是否展示了超出岗位职责的贡献
+
+### 5. 综合素质评分（soft_score，0-100 分制）
+- 90-100：沟通协作学习能力均强，有领导力潜力
+- 75-89：综合素质良好，个别维度有提升空间
+- 60-74：基础素质具备但缺乏突出亮点
+- 40-59：多项软性维度有欠缺
+- 0-39：综合素质与岗位要求差距较大
+- **注意：必须是 0-100 整数，不要给 1-10 分制！**（历史上曾出现 5/10 被误读成 5/100 = 5 分的严重 bug）
 
 ## 输出格式（严格 JSON）
 {{

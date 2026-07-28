@@ -77,11 +77,17 @@
 </div>
 
 <!-- AI 分析结果弹窗 -->
+<!-- 【v3.6.4 二修】aiModal 恢复默认 Bootstrap 黑透明 backdrop，原版设计
+     兑底仍是 v3.6.3 的 hidden.bs.modal 事件 + _purgeModalBackdrops() -->
 <div class="modal fade" id="aiModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><span class="badge badge-ai me-2"><i class="bi bi-robot"></i> AI</span>简历分析结果</h5>
+                <h5 class="modal-title">
+                    <span class="badge badge-ai me-2"><i class="bi bi-robot"></i> AI</span>简历分析结果
+                    <!-- 【v3.6】评估进度指示 -->
+                    <span id="aiEvalBadge" class="badge bg-secondary ms-2"></span>
+                </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" id="aiResult"></div>
@@ -111,6 +117,13 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" id="metaEvalResult"></div>
+            <div class="modal-footer">
+                <small class="text-muted me-auto">报告生成于 <span id="metaEvalGenTime">-</span></small>
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-success" id="btnExportMetaPdf" onclick="exportMetaEvalPdfFromModal()">
+                    <i class="bi bi-file-earmark-pdf me-1"></i>导出 PDF
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -156,6 +169,27 @@ let activeFilter = 'all';
 let activeSortMode = 'meta';  // match | interview | meta
 let searchKeyword = '';
 let selectedSet = new Map(); // id -> {name, position_id}
+
+// 【v3.6.3】全局兏底清理：aiModal 隐藏后强制删 .modal-backdrop + 解锁 body 滚动
+//      以防多次 show/hide 后 bootstrap 内部状态不一致导致 backdrop 残留变黑
+function _purgeModalBackdrops() {
+    document.querySelectorAll('.modal-backdrop').forEach(bd => bd.remove());
+    document.body.classList.remove('modal-open');
+    document.body.style.removeProperty('overflow');
+    document.body.style.removeProperty('padding-right');
+}
+document.addEventListener('DOMContentLoaded', () => {
+    const aiModalEl = document.getElementById('aiModal');
+    if (aiModalEl) {
+        aiModalEl.addEventListener('hidden.bs.modal', _purgeModalBackdrops);
+    }
+    // 保险：每隔 3 秒清一次 backdrop 残留（仅在确实存在时）
+    setInterval(() => {
+        if (!document.body.classList.contains('modal-open')) {
+            _purgeModalBackdrops();
+        }
+    }, 3000);
+});
 
 function onSearch(val) {
     searchKeyword = val.trim().toLowerCase();
@@ -363,6 +397,7 @@ function renderCandidates() {
                                         // 查看按钮：已有评估结果时显示
                                         if (hasMeta) {
                                             btns += `<button class="btn btn-sm btn-outline-info me-1" onclick="viewMetaEval(${c.id}, '${c.name}')" title="查看综合元评估"><i class="bi bi-eye"></i></button>`;
+                                            btns += `<button class="btn btn-sm btn-outline-success me-1" onclick="exportMetaEvalPdf(${c.id}, '${c.name}')" title="导出综合元评估 PDF"><i class="bi bi-file-earmark-pdf"></i></button>`;
                                         }
                                         // 评估/重新评估按钮：
                                         // 1. 从未评估过但有已完成面试 → 首次评估
@@ -460,26 +495,188 @@ async function createCandidate() {
         bootstrap.Modal.getInstance(document.getElementById('addModal')).hide();
         document.getElementById('newCandName').value = '';
         document.getElementById('newResume').value = '';
+        // 【v3.6.5 BUG 修复】清空 file input，避免上次的 PDF 在下一次添加候选人时被静默上传
+        // 覆盖手动粘贴的简历文本，导致新候选人被填充上次的简历内容。
+        const fi = document.getElementById('resumeFile');
+        if (fi) fi.value = '';
         loadCandidates();
     } else {
         showToast(res.message, 'danger');
     }
 }
 
+// 【v3.6.1】评估任务状态机 (角标 + 点未流程驱动)
+const _aiEvalJob = {
+    candidateId: null,
+    candidateName: null,
+    partial: null,        // partial 结果 (阶段1 完成后保存)
+    final: null,          // 最终结果 (阶段2 完成后保存)
+    phase: 'idle',        // idle | phase1 | phase2 | done
+    session: null,        // 最终阶段会话
+};
 async function analyzeCandidate(id, btn) {
+    const cand = candidatesCache.find(c => c.id === id);
+    if (!cand) return;
+    _aiEvalJob.candidateId = id;
+    _aiEvalJob.candidateName = cand.name;
+    _aiEvalJob.partial = null;
+    _aiEvalJob.final = null;
+    _aiEvalJob.phase = 'phase1';
+    _aiEvalJob.session = null;
+
+    // 【v3.6.1】启动角落角标（不再自动弹 modal，避免 backdrop 模糊页面）
+    showAiCornerBadge(
+        cand.name,
+        '<span class="spinner-border spinner-border-sm ai-corner-spinner text-primary me-1"></span>基础分评估中（≤2 分钟）...'
+    );
+
     consumeSSE(`/api/stream/candidate-analysis/${id}`, {
         initialMsg: 'AI 正在分析候选人简历...',
-        initialSub: '正在评估技能匹配度与岗位适配性，请稍候',
+        initialSub: '【v3.6】基础分(≤2 分钟) → 隐性维度(≤3 分钟) → 完整结果',
+        // 【v3.6.1】partial_complete 只更新角标，不弹 modal
+        async onPartial(partialResult /*, payload */) {
+            if (!partialResult) return;
+            _aiEvalJob.partial = partialResult;
+            _aiEvalJob.phase = 'phase2';
+            updateAiCornerBadge(
+                `<i class="bi bi-eye"></i> 基础分 <strong>${partialResult.match_score ?? '?'}/100</strong> 已出，隐性维度评估中（≤3 分钟）...`
+            );
+            showToast(`✅ ${cand.name} 基础分 ${partialResult.match_score}/100 已出，隐性维度后合中`, 'info');
+            // 【v3.6.2】partial 出来后自动弹一版 modal 让用户立刻看到基础分。
+            //         用户可以随时关掉 modal，不影响后台隐徃维度评估（角标继续显示进度）。
+            showAiResult(partialResult, null, { isPartial: true });
+        },
         async onComplete(payload) {
-            await loadCandidates();
-            showToast('AI 分析完成，面试会话已自动生成', 'success');
-            showAiResult(payload.result, payload.session);
+            _aiEvalJob.final = payload.result;
+            _aiEvalJob.session = payload.session;
+            _aiEvalJob.phase = 'done';
+            updateAiCornerBadge(
+                `<i class="bi bi-trophy"></i> 完整评估 <strong>${payload.result.match_score ?? '?'}/100</strong> 完成`,
+                true
+            );
+            showToast(`✅ ${cand.name} 完整评估已完成（${payload.result.match_score} 分），点击角标查看`, 'success');
+            // 后台刷新候选人列表（不阻塞角标交互）
+            try { await loadCandidates(); } catch(e) { console.error(e); }
         }
     });
 }
+// 【v3.6.1】角标点击逻辑：根据阶段响应不同
+function onAiBadgeClick() {
+    const job = _aiEvalJob;
+    if (job.phase === 'idle') return;
+    if (job.phase === 'phase1') {
+        showToast('基础分评估中，请稍候…', 'info');
+        return;
+    }
+    if (job.phase === 'phase2') {
+        // 隐性维度还没完，但可以先看 partial 结果
+        showToast(`隐性维度评估中，基础分 ${job.partial?.match_score ?? '?'}/100 可点此查看`, 'info');
+        if (job.partial) {
+            showAiResult(job.partial, null, { isPartial: true });
+        }
+        return;
+    }
+    if (job.phase === 'done' && job.final) {
+        showAiResult(job.final, job.session, { isPartial: false });
+        hideAiCornerBadge();
+        job.phase = 'idle';
+        return;
+    }
+}
 
-function showAiResult(analysis, session) {
+function showAiResult(analysis, session, opts = {}) {
     const data = typeof analysis === 'string' ? JSON.parse(analysis) : analysis;
+    const isPartial = !!opts.isPartial;
+    // 【v3.6】评估徽章同步更新
+    const badge = document.getElementById('aiEvalBadge');
+    if (badge) {
+        if (isPartial) {
+            badge.textContent = 'v3.6 基础分';
+            badge.className = 'badge bg-warning text-dark ms-2';
+        } else {
+            badge.textContent = '完整评估';
+            badge.className = 'badge bg-success ms-2';
+        }
+    }
+    // 【v3.6.3】partial 阶段顶部横幅加强明确：明确告知用户「这仅是基础分，隐性维度后台进行中」
+    const partialBanner = isPartial ? `
+        <div class="alert alert-warning py-3 mb-3" style="border-left: 4px solid #f59e0b;">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <i class="bi bi-lightning-charge-fill text-warning" style="font-size:1.2rem;"></i>
+                <strong>阶段 1 已完成 - 基础分（除隐性维度外）</strong>
+            </div>
+            <div class="small mb-0">
+                技术与素质评估完成，<strong>隐性维度（学历/职业发展/情绪稳定性/沟通能力等）正在后台评估中</strong>。该分数可能在 ±3 分内微调，请勿锁坐结果。
+                <hr class="my-2">
+                <i class="bi bi-bell me-1"></i>隐性维度完成后右下角角标会变绿，届时点击查看完整评估。
+            </div>
+        </div>` : '';
+
+    // 【v2.3】如 AI 评估完全失败（三个评估师都返空），但代码层兑底已提供
+    //         matched/missing/strengths/risks。展示兑底结果而不是只有一行话。
+    if (data.llm_fully_failed) {
+        const fbMatched = data.matched_skills || [];
+        const fbMissing = data.missing_skills || [];
+        const fbStrengths = data.strengths || [];
+        const fbRisks = data.risks || [];
+        document.getElementById('aiResult').innerHTML = `
+            ${partialBanner}
+            <div class="alert alert-warning mt-3">
+                <h6 class="mb-2"><i class="bi bi-exclamation-triangle me-1"></i>AI 智能评估本次未能完成完整评估</h6>
+                <p class="mb-2 small">LLM 服务本次不可达（限流/超时/安全拦截）。以下是基于简历与JD关键词扫描的<strong>代码兑底分析</strong>，可能不如完整 AI 评估精准，但至少能看到关键点。</p>
+            </div>
+
+            <div class="ai-result mt-3">
+                <h6><i class="bi bi-check-circle text-success me-1"></i>匹配技能 <small class="text-muted fw-normal">（代码兑底${fbMatched.length}项）</small></h6>
+                <div class="mb-3">${fbMatched.map(s => {
+                    const name = typeof s === 'string' ? s : s.skill;
+                    const prof = typeof s === 'object' && s.proficiency ? ' (' + s.proficiency + ')' : '';
+                    return `<span class="badge bg-success me-1 mb-1">${name}${prof}</span>`;
+                }).join('') || '<span class="text-muted">未识别到匹配项</span>'}</div>
+
+                <h6><i class="bi bi-x-circle text-danger me-1"></i>缺失技能 <small class="text-muted fw-normal">（代码兑底${fbMissing.length}项）</small></h6>
+                <div class="mb-3">${fbMissing.map(s => {
+                    const name = typeof s === 'string' ? s : s.skill;
+                    const imp = typeof s === 'object' && s.importance ? ' (' + s.importance + ')' : '';
+                    const cls = imp.includes('核心') ? 'danger' : imp.includes('重要') ? 'warning' : 'secondary';
+                    return `<span class="badge bg-${cls} me-1 mb-1">${name}${imp}</span>`;
+                }).join('') || '<span class="text-muted">未识别到缺失项</span>'}</div>
+
+                ${fbStrengths.length > 0 ? `
+                <h6><i class="bi bi-star text-warning me-1"></i>关键优势 <small class="text-muted fw-normal">（代码兑底${fbStrengths.length}项）</small></h6>
+                <ul>${fbStrengths.map(s => {
+                    if (typeof s === 'string') return `<li>${s}</li>`;
+                    return `<li>${s.point}${s.evidence ? ' <small class="text-muted">(' + s.evidence + ')</small>' : ''}</li>`;
+                }).join('')}</ul>` : ''}
+
+                ${fbRisks.length > 0 ? `
+                <h6 class="mt-3"><i class="bi bi-exclamation-triangle text-danger me-1"></i>需关注点 <small class="text-muted fw-normal">（代码兑底${fbRisks.length}项）</small></h6>
+                <ul>${fbRisks.map(r => {
+                    if (typeof r === 'string') return `<li>${r}</li>`;
+                    const sevColor = r.severity === '高' ? 'danger' : r.severity === '中' ? 'warning' : 'secondary';
+                    return `<li><span class="badge bg-${sevColor} me-1">${r.severity || ''}</span>${r.risk}${r.detail ? ' - ' + r.detail : ''}</li>`;
+                }).join('')}</ul>` : ''}
+            </div>
+
+            <div class="alert alert-info mt-3">
+                <i class="bi bi-arrow-clockwise me-1"></i>
+                <strong>提示：</strong>本次为代码兑底结果，并非完整 AI 智能评估。建议：
+                <ol class="mb-0 mt-1 ps-3 small">
+                    <li>几分钟后重试，让完整 AI 评估接管</li>
+                    <li>或点击 <a href="/interview" class="alert-link">前往面试工作台</a> 使用兑底面试题开始面试</li>
+                </ol>
+            </div>
+
+            ${session ? `
+            <div class="alert alert-success">
+                <i class="bi bi-check-circle me-1"></i>
+                <strong>面试会话已生成（兑底题目）</strong>，点击 <a href="/interview" class="alert-link">前往面试工作台</a> 开始面试
+            </div>` : ''}
+        `;
+        new bootstrap.Modal(document.getElementById('aiModal')).show();
+        return;
+    }
+
     const score = data.match_score || 0;
     const scoreColor = score >= 70 ? 'success' : score >= 50 ? 'warning' : 'danger';
     
@@ -527,109 +724,8 @@ function showAiResult(analysis, session) {
         </div>`;
     }
     
-    // 构建隐性条件分析 HTML
-    const cp = data.candidate_profile || {};
-    const confBadge = (c) => {
-        if (!c) return '';
-        const cls = c === 'high' ? 'success' : c === 'medium' ? 'warning' : 'secondary';
-        const txt = c === 'high' ? '高' : c === 'medium' ? '中' : '低';
-        return `<span class="badge bg-${cls} ms-1" style="font-size:0.65rem;" title="置信度">${txt}</span>`;
-    };
-    
-    let profileHtml = '';
-    if (Object.keys(cp).length > 0) {
-        const edu = cp.education || {};
-        const res = cp.residence || {};
-        const career = cp.career_direction || {};
-        const stability = cp.job_stability || {};
-        const emotional = cp.emotional_stability || {};
-        const comm = cp.communication_ability || {};
-        const team = cp.teamwork_style || {};
-        const learning = cp.learning_ability || {};
-        const auth = cp.resume_authenticity || {};
-        
-        const levelBadge = (level, type) => {
-            if (!level || level === '未明确') return '<span class="text-muted">未明确</span>';
-            const colors = {
-                '稳定': 'success', '一般': 'warning', '不稳定': 'danger',
-                '较好': 'success', '待观察': 'warning',
-                '强': 'success', '较弱': 'danger',
-                '真实': 'success', '有包装痕迹': 'warning', '明显包装': 'danger',
-                '高度匹配': 'success', '匹配': 'primary', '不匹配': 'danger'
-            };
-            return `<span class="badge bg-${colors[level] || 'secondary'}">${level}</span>`;
-        };
-        
-        profileHtml = `
-        <div class="mt-4">
-            <h5 class="mb-3"><i class="bi bi-person-lines-fill me-1 text-primary"></i>候选人画像</h5>
-            <div class="row g-2">
-                <div class="col-md-6">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-mortarboard me-1"></i>学历背景 ${confBadge(edu.confidence)}</div>
-                        <div>${edu.detail || '未明确'}</div>
-                        <div class="text-muted mt-1">层次: ${edu.school_tier || '-'} | 专业相关性: ${edu.major_relevance || '-'}</div>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-geo-alt me-1"></i>居住地 ${confBadge(res.confidence)}</div>
-                        <div>当前: ${res.current_city || '未明确'}</div>
-                        <div class="text-muted mt-1">迁移意愿: ${res.willingness_to_relocate || '-'} ${res.detail ? '| ' + res.detail : ''}</div>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-signpost-split me-1"></i>职业发展方向 ${confBadge(career.confidence)}</div>
-                        <div>${levelBadge(career.preferred_track)} ${career.detail || ''}</div>
-                        <div class="text-muted mt-1">与岗位匹配: ${levelBadge(career.alignment_with_role)}</div>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-shield-check me-1"></i>岗位稳定度 ${confBadge(stability.confidence)}</div>
-                        <div>${levelBadge(stability.level)} ${stability.detail || ''}</div>
-                        <div class="text-muted mt-1">平均在职: ${stability.avg_tenure || '-'} | 跳槽: ${stability.job_hops || '-'}次</div>
-                        ${(stability.red_flags || []).length ? `<div class="text-danger mt-1">${stability.red_flags.join(' | ')}</div>` : ''}
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-emoji-smile me-1"></i>情绪稳定性 ${confBadge(emotional.confidence)}</div>
-                        <div>${levelBadge(emotional.level)}</div>
-                        ${(emotional.signals || []).length ? `<div class="text-muted mt-1">${emotional.signals.join(', ')}</div>` : ''}
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-chat-square-text me-1"></i>沟通能力 ${confBadge(comm.confidence)}</div>
-                        <div>${levelBadge(comm.level)}</div>
-                        <div class="text-muted mt-1">${comm.detail || ''}</div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-people me-1"></i>协作风格 ${confBadge(team.confidence)}</div>
-                        <div>${team.style || '未明确'}</div>
-                        <div class="text-muted mt-1">${team.detail || ''}</div>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-lightbulb me-1"></i>学习能力 ${confBadge(learning.confidence)}</div>
-                        <div>${levelBadge(learning.level)} ${learning.detail || ''}</div>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="p-2 bg-light rounded small">
-                        <div class="fw-bold mb-1"><i class="bi bi-file-earmark-check me-1"></i>简历真实度 ${confBadge(auth.confidence)}</div>
-                        <div>${levelBadge(auth.level)} ${auth.detail || ''}</div>
-                        ${(auth.packaging_signals || []).length ? `<div class="text-warning mt-1">包装信号: ${auth.packaging_signals.join(', ')}</div>` : ''}
-                    </div>
-                </div>
-            </div>
-        </div>`;
-    }
+    // 【v3.6.4】候选人画像模块已删除：简历真实度/学习能力/职业发展方向/居住地
+    // 直接从隐性条件对照表读取，简化分析内容。
     
     const sessionHtml = session ? `
         <div class="alert alert-success mt-3">
@@ -637,8 +733,9 @@ function showAiResult(analysis, session) {
             <strong>面试会话已自动生成！</strong> 点击 <a href="/interview" class="alert-link">前往面试工作台</a> 开始面试
         </div>
     ` : '';
-    
+
     document.getElementById('aiResult').innerHTML = `
+        ${partialBanner}
         <div class="text-center mb-4">
             <div class="badge bg-${scoreColor} score-badge p-3">${score} 分</div>
             <p class="text-muted mt-2">${data.summary || ''}</p>
@@ -673,7 +770,6 @@ function showAiResult(analysis, session) {
             }).join('')}</ul>
         </div>
         ${mappingHtml}
-        ${profileHtml}
         <div class="ai-result mt-3">
             <h6><i class="bi bi-chat-left-text me-1"></i>建议面试问题</h6>
             <ul>${(data.suggested_questions || []).map(q => {
@@ -699,8 +795,61 @@ async function deleteCandidate(id) {
 
 // === 综合元评估 ===
 
+// 当前查看元评估的候选人 ID（供 PDF 导出使用）
+let _currentMetaEvalId = null;
+
+// 导出综合元评估 PDF（从列表直接调用）
+async function exportMetaEvalPdf(id, name) {
+    if (!id) { showToast('候选人 ID 无效', 'danger'); return; }
+    showToast(`正在生成「${name}」综合元评估 PDF...`, 'info');
+    try {
+        const res = await fetch(`/api/candidates/${id}/meta-evaluation/pdf`, { credentials: 'same-origin' });
+        if (!res.ok) {
+            let msg = `导出失败 (${res.status})`;
+            try {
+                const data = await res.json();
+                msg = data.message || msg;
+            } catch (e) {}
+            showToast(msg, 'danger');
+            return;
+        }
+        // 从响应头获取文件名
+        const disposition = res.headers.get('Content-Disposition') || '';
+        let filename = `综合元评估报告_${name}.pdf`;
+        const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/);
+        if (utf8Match) {
+            try { filename = decodeURIComponent(utf8Match[1]); } catch (e) {}
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast('PDF 下载已开始', 'success');
+    } catch (e) {
+        showToast('导出失败：' + e.message, 'danger');
+    }
+}
+
+// 导出综合元评估 PDF（从弹窗内部调用）
+function exportMetaEvalPdfFromModal() {
+    if (!_currentMetaEvalId) {
+        showToast('未选择候选人，请先打开综合元评估', 'warning');
+        return;
+    }
+    const c = candidatesCache.find(x => x.id === _currentMetaEvalId);
+    const name = c ? c.name : `candidate_${_currentMetaEvalId}`;
+    exportMetaEvalPdf(_currentMetaEvalId, name);
+}
+
 // 查看已有综合元评估
 async function viewMetaEval(id, name) {
+    _currentMetaEvalId = id;
     try {
         const res = await apiCall(`/api/candidates/${id}/meta-evaluation`);
         if (res.code === 200) {
@@ -716,7 +865,8 @@ async function viewMetaEval(id, name) {
 // 执行综合元评估（SSE 流式）
 async function runMetaEval(id, name, btn) {
     if (!confirm(`确定对「${name}」进行综合元评估？\n将汇总简历评估+所有面试报告生成最终决策。`)) return;
-    
+
+    _currentMetaEvalId = id;
     consumeSSE(`/api/stream/meta-evaluation/${id}`, {
         initialMsg: 'AI 正在进行综合元评估...',
         initialSub: '正在汇总岗位分析、简历评估与各轮面试数据，请稍候',
@@ -852,6 +1002,12 @@ function showMetaEvalResult(data, name) {
             <strong>综合评估总结：</strong>${data.summary || ''}
         </div>
     `;
+    // 更新页脚的生成时间
+    const genEl = document.getElementById('metaEvalGenTime');
+    if (genEl) {
+        const now = new Date();
+        genEl.textContent = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+    }
     new bootstrap.Modal(document.getElementById('metaEvalModal')).show();
 }
 

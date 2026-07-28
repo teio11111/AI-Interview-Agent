@@ -1,5 +1,6 @@
 """项目深挖出题官 Agent - 专注设计项目经历深挖题"""
 from agents.base_agent import BaseAgent
+from utils.text_truncate import truncate_for_prompt
 
 
 class ProjectQuestionerAgent(BaseAgent):
@@ -43,6 +44,9 @@ class ProjectQuestionerAgent(BaseAgent):
         Returns:
             dict: 3道项目深挖题
         """
+        pos_sum = truncate_for_prompt(self.summarize(position_analysis), max_chars=2500)
+        resume_sum = truncate_for_prompt(self.summarize(resume_analysis), max_chars=2500)
+
         prompt = f"""## 任务
 你是项目深挖出题官。请从候选人简历中提取 2-3 个最有价值的项目，
 为每个项目设计 1 道深挖题（共 3 道题）。
@@ -56,11 +60,11 @@ class ProjectQuestionerAgent(BaseAgent):
 - 岗位名称：{position_name}
 - 技术要求：{tech_requirements or ''}
 
-## 岗位分析师的分析结果
-{self.summarize(position_analysis)}
+## 岗位分析师的分析结果（摘要）
+{pos_sum}
 
-## 简历评估师的评估结果
-{self.summarize(resume_analysis)}
+## 简历评估师的评估结果（摘要）
+{resume_sum}
 
 ## 候选人简历原文
 {resume_text or '暂无'}

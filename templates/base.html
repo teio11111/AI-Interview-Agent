@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}AI Interview Agent{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="{{ url_for('static', filename='vendor/bootstrap-icons/bootstrap-icons.css') }}" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <style>
         :root {
             --primary-color: #4f46e5;
@@ -14,25 +14,83 @@
             --border-color: #e2e8f0;
         }
         body { background-color: var(--bg-light); font-family: 'Segoe UI', system-ui, sans-serif; }
-        .navbar { background: linear-gradient(135deg, var(--primary-color), #7c3aed) !important; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                /* 【v3.6.2】保险锁：ai-loading-overlay 关闭后从 DOM 树移走，避免任何残留遮黑 */
+                .ai-loading-overlay { display: none !important; }
+                .ai-loading-overlay.active { display: flex !important; }
+        .navbar {
+            background: linear-gradient(135deg, var(--primary-color), #7c3aed) !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding-top: 0.6rem;
+            padding-bottom: 0.6rem;
+        }
         .navbar-brand { font-weight: 700; font-size: 1.3rem; }
-        .nav-link { font-weight: 500; opacity: 0.85; transition: opacity 0.2s; }
-        .nav-link:hover, .nav-link.active { opacity: 1; }
+        .nav-link {
+            font-weight: 500;
+            opacity: 0.85;
+            transition: opacity 0.2s;
+            padding: 0.5rem 0.9rem !important;
+            border-radius: 6px;
+            margin: 0 1px;
+        }
+        .nav-link:hover, .nav-link.active { opacity: 1; background: rgba(255,255,255,0.12); }
+        /* 响应式：中小屏导航栏折叠为竖向菜单 */
+        @media (max-width: 991.98px) {
+            .navbar-collapse {
+                margin-top: 0.5rem;
+                padding: 0.5rem 0;
+                border-top: 1px solid rgba(255,255,255,0.18);
+            }
+            .navbar-nav {
+                width: 100%;
+            }
+            .navbar-nav .nav-item {
+                width: 100%;
+            }
+            .navbar-nav .nav-link {
+                display: flex !important;
+                align-items: center;
+                padding: 0.7rem 0.9rem !important;
+                margin: 2px 0;
+                font-size: 0.95rem;
+            }
+            .navbar-nav .nav-link i { width: 22px; }
+            .navbar-nav .dropdown-menu {
+                background: rgba(255,255,255,0.08);
+                border: none;
+                box-shadow: none;
+                margin: 0 0 0.5rem 1rem;
+                width: auto;
+            }
+            .navbar-nav .dropdown-item { color: rgba(255,255,255,0.85); }
+            .navbar-nav .dropdown-item:hover { background: rgba(255,255,255,0.15); color: #fff; }
+        }
+        /* 折叠按钮颜色调整（白色汉堡菜单） */
+        .navbar-toggler { border-color: rgba(255,255,255,0.5); padding: 0.25rem 0.5rem; }
+        .navbar-toggler:focus { box-shadow: 0 0 0 0.2rem rgba(255,255,255,0.25); }
         .card { border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .card-header { background: white; border-bottom: 1px solid var(--border-color); font-weight: 600; }
         .btn-primary { background-color: var(--primary-color); border-color: var(--primary-color); }
         .btn-primary:hover { background-color: var(--primary-hover); border-color: var(--primary-hover); }
-        .badge-ai { background: linear-gradient(135deg, #8b5cf6, #06b6d4); color: white; }
+        /* AI 标识 badge：v2.0 修复色系不一致问题
+           原配色 #8b5cf6(紫) → #06b6d4(青) 与主色 #4f46e5(靛蓝) 不一致，看起来「不够蓝」
+           改为 #3b82f6(blue-500) → #06b6d4(cyan-500)，色系统一在蓝/青之间 */
+        .badge-ai { background: linear-gradient(135deg, #3b82f6, #06b6d4); color: white; }
         .loading { display: none; }
         .loading.active { display: inline-block; }
         .spinner-border-sm { width: 1rem; height: 1rem; }
         .ai-result { background: linear-gradient(135deg, #f0f9ff, #ede9fe); border-radius: 12px; padding: 1.5rem; margin-top: 1rem; }
         .score-badge { font-size: 1.5rem; font-weight: 700; }
         .toast-container { position: fixed; top: 80px; right: 20px; z-index: 9999; }
-        /* AI loading overlay */
+        /* AI loading overlay
+           【v3.6.4 二修】恢复原版风格：白透明背景 + backdrop-filter 模糊。
+           白透明（rgba(255,255,255,0.85)）+ 模糊滤镜是 v2.x 起一直采用的风格，
+           modal backdrop（黑透明）是 Bootstrap 默认。
+           分析完成后由 v3.6.3 兑底机制负责强制关闭遮罩。 */
         .ai-loading-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(255,255,255,0.85); backdrop-filter: blur(4px);
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
             z-index: 10000; display: none;
             justify-content: center; align-items: center; flex-direction: column;
         }
@@ -49,13 +107,68 @@
         .ai-loading-overlay .ai-sub {
             font-size: 0.85rem; color: #6b7280;
         }
+        /* 【v3.3】超时预警：1 分钟后显示，2 分钟强制超时 */
+        .ai-loading-overlay .ai-slow-warning {
+            display: none;
+            margin-top: 1rem;
+            padding: 0.6rem 1rem;
+            background: #fff8e6;
+            border: 1px solid #f59e0b;
+            border-radius: 6px;
+            color: #92400e;
+            font-size: 0.82rem;
+            max-width: 360px;
+            text-align: center;
+            line-height: 1.5;
+        }
+        .ai-loading-overlay .ai-slow-warning.active {
+            display: block;
+            animation: ai-slow-pulse 2s ease-in-out infinite;
+        }
+        .ai-loading-overlay .ai-slow-warning .ai-slow-icon {
+            font-size: 1rem;
+            margin-right: 0.3rem;
+        }
+        .ai-loading-overlay .ai-slow-warning .ai-slow-countdown {
+            font-weight: 700;
+            color: #b45309;
+        }
+        @keyframes ai-slow-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.75; }
+        }
+        /* 【v3.6.1】角落 AI 评估角标 - partial 不弹 modal，改用角标 */
+        .ai-corner-badge {
+            position: fixed; bottom: 24px; right: 24px; z-index: 9998;
+            min-width: 280px; max-width: 360px;
+            cursor: pointer; transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .ai-corner-badge:hover { transform: translateY(-2px); }
+        .ai-corner-badge .card {
+            border-left: 4px solid var(--primary-color);
+            background: linear-gradient(135deg, #ffffff, #f0f9ff);
+            box-shadow: 0 4px 12px rgba(79,70,229,0.18);
+            border-radius: 10px;
+        }
+        .ai-corner-badge.completed .card {
+            border-left-color: #10b981;
+            background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+            animation: ai-corner-pulse 2s ease-in-out infinite;
+        }
+        @keyframes ai-corner-pulse {
+            0%, 100% { box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
+            50% { box-shadow: 0 4px 20px rgba(16,185,129,0.55); }
+        }
+        .ai-corner-badge .ai-corner-spinner {
+            animation: ai-spin 1s linear infinite;
+        }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container">
-            <a class="navbar-brand" href="{{ '/candidate' if current_user and current_user.role == 'candidate' else '/' }}">
+            <a class="navbar-brand" href="/">
                 <i class="bi bi-robot"></i> AI Interview Agent
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
@@ -89,12 +202,7 @@
                             <i class="bi bi-chat-dots"></i> 面试工作台
                         </a>
                     </li>
-                    {% elif current_user and current_user.role == 'candidate' %}
-                    <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'candidate_portal.portal_page' %}active{% endif %}" href="/candidate">
-                            <i class="bi bi-door-open"></i> 我的门户
-                        </a>
-                    </li>
+                    {# 【隐藏】候选人门户导航入口（管理员后台不再需要） #}
                     {% endif %}
                     {% if current_user %}
                     <li class="nav-item dropdown">
@@ -122,6 +230,34 @@
         <div class="ai-spinner"></div>
         <div class="ai-msg" id="aiLoadingMsg">AI 正在处理中...</div>
         <div class="ai-sub" id="aiLoadingSub">请耐心等待，通常需要 10-30 秒</div>
+        <!-- 【v2.3】进度条 + 阶段跟踪 -->
+        <div class="ai-progress-container mt-3" style="width: 60%; max-width: 320px;">
+            <div class="progress" style="height: 6px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                     id="aiLoadingBar" role="progressbar" style="width: 0%"></div>
+            </div>
+            <ul class="ai-stage-list list-unstyled mt-3 small text-start" id="aiLoadingStages"
+                style="color:#333; max-height: 140px; overflow-y: auto;"></ul>
+        </div>
+        <!-- 【v3.3】超时预警：1 分钟后才显示，避免用户误以为卡住 -->
+        <div class="ai-slow-warning" id="aiSlowWarning">
+            <i class="bi bi-clock-history ai-slow-icon"></i>分析时间偏长，<strong class="ai-slow-hint">基础分</strong>评估中。<br>
+            将在 <span class="ai-slow-countdown" id="aiSlowCountdown">60</span> 秒后超时取消。
+        </div>
+    </div>
+
+    <!-- 【v3.6.1】角落 AI 评估角标 (partial 不弹 modal，改用角标提示) -->
+    <div id="aiCornerBadge" class="ai-corner-badge" style="display:none;" onclick="onAiBadgeClick()">
+        <div class="card shadow-sm">
+            <div class="card-body p-3">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <i class="bi bi-robot text-primary" id="aiCornerIcon"></i>
+                    <strong class="flex-grow-1" id="aiCornerName">候选人评估</strong>
+                    <button class="btn-close btn-close-sm" onclick="event.stopPropagation(); hideAiCornerBadge()" aria-label="关闭"></button>
+                </div>
+                <div id="aiCornerStatus" class="small">准备中...</div>
+            </div>
+        </div>
     </div>
 
     <!-- Toast 通知 -->
@@ -164,13 +300,195 @@
             }
         }
 
+        // 【v3.2】进度条缓动 + agent 高亮 + 75% 兜底
+        // 浏览器 fetch+ReadableStream 会把多个 SSE chunk 合并到连接关闭才下发，
+        // 导致 agent_complete / stage_complete 这些中间事件迟迟不到，bar 卡死。
+        // 这里在 _aiCurrentPercent == _aiTargetPercent 且 < 75 时，
+        // 每 tick 主动 +1%，模拟「后端还在干活」的感觉，到 75% 自动停。
+        // 一旦后端真事件到达（如 percent=80/95/100），_aiTargetPercent 被抬高，bar 会跟着跳。
+        const _AI_VIRTUAL_CEILING = 75;     // 虚拟推进上限
+        const _AI_VIRTUAL_STEP = 1;          // 每 tick +1%
+        let _aiProgressTimer = null;        // 缓动定时器
+        let _aiCurrentPercent = 5;          // 当前 bar 百分比
+        let _aiTargetPercent = 5;           // 后端事件设定的目标
+        let _aiSeenAgents = new Set();      // 已亮起的 agent 名
+        let _aiLastEventAt = 0;             // 上次后端事件时间戳（用于判断是否要虚拟推进）
+        function _aiTick() {
+            const bar = document.getElementById('aiLoadingBar');
+            if (_aiCurrentPercent < _aiTargetPercent) {
+                // 收到新事件：向 target 靠拢（不会越过，避免覆盖后端事件）
+                _aiCurrentPercent = Math.min(_aiTargetPercent, _aiCurrentPercent + _AI_VIRTUAL_STEP);
+                if (bar) bar.style.width = _aiCurrentPercent + '%';
+                _aiLastEventAt = Date.now();
+            } else if (_aiCurrentPercent < _AI_VIRTUAL_CEILING) {
+                // 没新事件：虚拟推进，让用户感觉「后端还在干活」
+                _aiCurrentPercent = Math.min(_AI_VIRTUAL_CEILING, _aiCurrentPercent + _AI_VIRTUAL_STEP);
+                if (bar) bar.style.width = _aiCurrentPercent + '%';
+            } else {
+                // 已到达目标（或 >= 75 上限且目标不再推进）：停止定时器，避免空转
+                if (_aiProgressTimer) {
+                    clearInterval(_aiProgressTimer);
+                    _aiProgressTimer = null;
+                }
+            }
+        }
+        function _aiStartTicker() {
+            if (_aiProgressTimer) clearInterval(_aiProgressTimer);
+            _aiCurrentPercent = 5;
+            _aiTargetPercent = 5;
+            _aiSeenAgents.clear();
+            _aiProgressTimer = setInterval(_aiTick, 200);  // 200ms 一步 ≈ 5%/s，让用户看到逐步增长
+        }
+        function _aiStopTicker() {
+            if (_aiProgressTimer) {
+                clearInterval(_aiProgressTimer);
+                _aiProgressTimer = null;
+            }
+        }
+        // 【v3.6.1】两阶段超时：基础分 ≤120s，隐性维度 ≤180s，总计 ≤300s
+        const _AI_PHASE1_TIMEOUT = 120;   // 阶段1：基础分超时 (除隐形外2分钟)
+        const _AI_PHASE2_TIMEOUT = 180;   // 阶段2：隐性维度超时 (隐性3分钟)
+        const _AI_SLOW_WARNING_AT = 60;   // 每阶段过 60s 后显示预警
+        let _aiSlowWarnTimer = null;      // 倒计时定时器
+        let _aiSlowWarnShownAt = 0;       // 预警实际显示的时间点
+        let _aiCurrentPhase = 1;          // 【v3.6.1】当前评估阶段
+        function _aiStartSlowWarningTimer() {
+            _aiStopSlowWarningTimer();
+            _aiSlowWarnTimer = setTimeout(() => {
+                const slowWarn = document.getElementById('aiSlowWarning');
+                const countdown = document.getElementById('aiSlowCountdown');
+                const overlay = document.getElementById('aiLoadingOverlay');
+                const hintEl = slowWarn ? slowWarn.querySelector('.ai-slow-hint') : null;
+                if (!slowWarn || !overlay || !overlay.classList.contains('active')) return;
+                _aiSlowWarnShownAt = Date.now();
+                slowWarn.classList.add('active');
+                // 【v3.6.1】区分阶段文案
+                if (hintEl) hintEl.textContent = _aiCurrentPhase === 1 ? '基础分' : '隐性维度';
+                // 【v3.6.1】每阶段预警后倒计时 = 阶段超时 - 预警起点
+                const phaseTimeout = _aiCurrentPhase === 1 ? _AI_PHASE1_TIMEOUT : _AI_PHASE2_TIMEOUT;
+                let remaining = phaseTimeout - _AI_SLOW_WARNING_AT;
+                countdown.textContent = remaining;
+                _aiSlowWarnTimer = setInterval(() => {
+                    remaining -= 1;
+                    if (remaining <= 0) {
+                        countdown.textContent = '即将';
+                        _aiStopSlowWarningTimer();
+                    } else {
+                        countdown.textContent = remaining;
+                    }
+                }, 1000);
+            }, _AI_SLOW_WARNING_AT * 1000);
+        }
+        function _aiStopSlowWarningTimer() {
+            if (_aiSlowWarnTimer) {
+                clearTimeout(_aiSlowWarnTimer);
+                clearInterval(_aiSlowWarnTimer);
+                _aiSlowWarnTimer = null;
+            }
+        }
+        // 【v3.6.1】阶段切换 (partial_complete 时调用)：重置预警并启动新阶段倒计时
+        window._aiSwitchPhase = function(phase) {
+            _aiCurrentPhase = phase;
+            _aiStopSlowWarningTimer();
+            const slowWarn = document.getElementById('aiSlowWarning');
+            if (slowWarn) slowWarn.classList.remove('active');
+            const countdown = document.getElementById('aiSlowCountdown');
+            if (countdown) countdown.textContent = '60';
+            _aiStartSlowWarningTimer();
+        };
         function showAiLoading(msg, sub) {
             document.getElementById('aiLoadingMsg').textContent = msg || 'AI 正在处理中...';
             document.getElementById('aiLoadingSub').textContent = sub || '请耐心等待，通常需要 10-30 秒';
-            document.getElementById('aiLoadingOverlay').classList.add('active');
+            const overlay = document.getElementById('aiLoadingOverlay');
+            // 【v3.6.3】先清掉内联 style，让 CSS class 控制显示
+            if (overlay) {
+                overlay.style.display = '';
+                overlay.classList.add('active');
+            }
+            // 重置进度
+            const bar = document.getElementById('aiLoadingBar');
+            const stages = document.getElementById('aiLoadingStages');
+            if (bar) bar.style.width = '5%';
+            if (stages) stages.innerHTML = '';
+            // 【v3.3】隐藏超时预警（刚启动时不应看到）
+            const slowWarn = document.getElementById('aiSlowWarning');
+            if (slowWarn) slowWarn.classList.remove('active');
+            // 重置倒计时文本，以免下次启动时显示上次的数字（v3.3 修复）
+            const countdown = document.getElementById('aiSlowCountdown');
+            if (countdown) countdown.textContent = '60';
+            const hintEl = slowWarn ? slowWarn.querySelector('.ai-slow-hint') : null;
+            if (hintEl) hintEl.textContent = '基础分';
+            // 【v3.6.1】每次重新打开遮罩都重置为阶段 1
+            _aiCurrentPhase = 1;
+            _aiStartTicker();
+            _aiStartSlowWarningTimer();
         }
         function hideAiLoading() {
-            document.getElementById('aiLoadingOverlay').classList.remove('active');
+            const overlay = document.getElementById('aiLoadingOverlay');
+            if (overlay) {
+                overlay.classList.remove('active');
+                // 【v3.6.3】内联 display:none 强制冻结，避免 chromium 渲染粘连
+                overlay.style.display = 'none';
+            }
+            const bar = document.getElementById('aiLoadingBar');
+            const stages = document.getElementById('aiLoadingStages');
+            if (bar) bar.style.width = '100%';
+            _aiStopTicker();
+            _aiStopSlowWarningTimer();
+            // 【v3.3】主动隐藏预警，以免下次打开时闪一下老文案
+            const slowWarn = document.getElementById('aiSlowWarning');
+            if (slowWarn) slowWarn.classList.remove('active');
+            // 保留 600ms 让用户看到 100%，再清空 stages
+            if (window._aiHideTimer) clearTimeout(window._aiHideTimer);
+            window._aiHideTimer = setTimeout(() => {
+                if (stages) stages.innerHTML = '';
+            }, 600);
+        }
+        // 【v3.1】记录进度事件：agent 名作为勾，阶段名作上下文
+        function pushAiStage(stage, agent, message, percent) {
+            const stages = document.getElementById('aiLoadingStages');
+            const bar = document.getElementById('aiLoadingBar');
+            const sub = document.getElementById('aiLoadingSub');
+
+            // 文本：优先用 agent 名作为勾，其次用 message
+            const text = agent || message || stage || '';
+            if (stages && text) {
+                // 【v3.1】同 agent 只允许一个勾（避免 stage_start + agent_start 重夏）
+                if (agent && _aiSeenAgents.has(agent)) {
+                    // agent 已点亮过，只更新最近一条的尾部时间戳
+                    const items = stages.querySelectorAll('li');
+                    for (let i = items.length - 1; i >= 0; i--) {
+                        if (items[i].dataset.agent === agent) {
+                            const ts = items[i].querySelector('.ai-ts');
+                            if (ts) ts.textContent = `·${(elapsed => elapsed > 0 ? elapsed + 's' : '')(0)}`;
+                            break;
+                        }
+                    }
+                } else {
+                    const li = document.createElement('li');
+                    li.dataset.agent = agent || '';
+                    li.innerHTML = `<i class="bi bi-check2-circle text-success me-1"></i>${text}<span class="ai-ts text-muted small ms-1"></span>`;
+                    stages.appendChild(li);
+                    if (agent) _aiSeenAgents.add(agent);
+                    stages.scrollTop = stages.scrollHeight;
+                }
+            }
+
+            // 【v3.1】进度条缓动：后端事件设定 target，定时器缓动到 target
+            if (typeof percent === 'number') {
+                _aiTargetPercent = Math.max(5, Math.min(95, percent));
+                if (bar) bar.style.width = _aiCurrentPercent + '%';
+                // 【v3.2】如果定时器之前因到达 75% 停了，收到新事件要重启
+                // （否则 bar 会一直停在 75%，不会向 80/95/100 推进）
+                if (!_aiProgressTimer && _aiCurrentPercent < 100) {
+                    _aiProgressTimer = setInterval(_aiTick, 200);
+                }
+            }
+
+            // 子标题：如果有 agent 名则提示哪个 agent
+            if (sub && agent && /完成|出错|错误/.test(message || '')) {
+                sub.textContent = `${agent} 已完成，等待 LLM 总结中…`;
+            }
         }
 
         // 通用 SSE 消费函数：流式读取 AI 进度，实时更新加载遮罩
@@ -180,8 +498,11 @@
             initialMsg = 'AI 正在处理中...',
             initialSub = '请耐心等待，通常需要 10-30 秒',
             onComplete = null,   // (result) => {}
+            onPartial = null,   // 【v3.6】(partial_result, payload) => {}  拿到基础分时可先弹窗
             onError = null       // (message) => {}
         } = {}) {
+            // 【v3.6】由 consumeSSE 提供一个默认的 __onPartial 门贯
+            window.__onPartial = onPartial;
             showAiLoading(initialMsg, initialSub);
             try {
                 const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -207,10 +528,30 @@
                         if (!line.startsWith('data: ')) continue;
                         try {
                             const p = JSON.parse(line.slice(6));
-                            if (p.event === 'progress') {
+                            // 【v3.1 修复】agent_start / agent_complete / stage_start / stage_complete
+                            // 也要更新 UI，不能只处理 'progress' 事件。
+                            // stream_routes.py 里除了手动 q.put({'event':'progress',...}) 外，
+                            // 编排器的 _emit 会发出 agent_start/complete、stage_start/complete，
+                            // 这些都是进度信号，不处理就会只剩一个勾。
+                            if (p.event === 'progress' || p.event === 'stage_start'
+                                || p.event === 'stage_complete'
+                                || p.event === 'agent_start' || p.event === 'agent_complete'
+                                || p.event === 'agent_error') {
                                 if (p.message) document.getElementById('aiLoadingMsg').textContent = p.message;
                                 if (p.agent) document.getElementById('aiLoadingSub').textContent = `${p.agent} 正在工作...`;
+                                pushAiStage(p.stage || '', p.agent || '', p.message || '', p.percent);
+                            } else if (p.event === 'partial_complete') {
+                                // 【v3.6.1】切换到阶段 2，重置预警倒计时 (隐徃维度阶段)
+                                if (typeof window._aiSwitchPhase === 'function') window._aiSwitchPhase(2);
+                                // 【v3.6.1】partial 出来后关掉全屏遮罩，让用户继续浏览候选人列表，
+                                //         仅保留角落角标显示隐徃维度阶段进度。
+                                hideAiLoading();
+                                // 【v3.6】技术+素质基础分已出，先推给调用者
+                                if (typeof window.__onPartial === 'function') {
+                                    try { window.__onPartial(p.partial_result, p); } catch(e) { console.error(e); }
+                                }
                             } else if (p.event === 'complete') {
+                                _aiTargetPercent = 100;
                                 result = p;
                             } else if (p.event === 'error') {
                                 hideAiLoading();
@@ -232,6 +573,34 @@
                 if (onError) onError('网络错误: ' + e.message);
                 else showToast('网络错误: ' + e.message, 'danger');
             }
+        }
+
+        // 【v3.6.1】角落 AI 评估角标控制（partial 不弹 modal，改用角标）
+        function showAiCornerBadge(name, status) {
+            const badge = document.getElementById('aiCornerBadge');
+            if (!badge) return;
+            badge.classList.remove('completed');
+            document.getElementById('aiCornerIcon').className = 'bi bi-robot text-primary';
+            document.getElementById('aiCornerName').textContent = name;
+            document.getElementById('aiCornerStatus').innerHTML = status;
+            badge.style.display = 'block';
+        }
+        function updateAiCornerBadge(status, completed = false) {
+            const badge = document.getElementById('aiCornerBadge');
+            if (!badge) return;
+            if (completed) {
+                badge.classList.add('completed');
+                document.getElementById('aiCornerIcon').className = 'bi bi-check-circle-fill text-success';
+                document.getElementById('aiCornerStatus').innerHTML = status + ' <span class="badge bg-success ms-1">点此查看</span>';
+            } else {
+                badge.classList.remove('completed');
+                document.getElementById('aiCornerIcon').className = 'bi bi-robot text-primary';
+                document.getElementById('aiCornerStatus').innerHTML = status;
+            }
+        }
+        function hideAiCornerBadge() {
+            const badge = document.getElementById('aiCornerBadge');
+            if (badge) badge.style.display = 'none';
         }
     </script>
     <script>

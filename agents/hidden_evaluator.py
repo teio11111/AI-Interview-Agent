@@ -1,5 +1,6 @@
 """隐性因素评估师 Agent - 专注隐性条件与风险因素评估"""
 from agents.base_agent import BaseAgent
+from utils.text_truncate import truncate_for_prompt, clean_resume_text
 
 
 class HiddenEvaluatorAgent(BaseAgent):
@@ -26,6 +27,23 @@ class HiddenEvaluatorAgent(BaseAgent):
 - 简历真实度检测要客观，"参与"≠"主导"，数字要合理
 - 隐性条件推断必须给出推断依据
 
+## 【v2.1 重要】隐性条件评分原则
+你必须在 hidden_score_breakdown 为 9 个隐性维度各打一个 1-10 分，原则如下：
+- 1-3：明显不符合（学历不匹配岗位、明显包装、经常跳槽）
+- 4-5：一般/未明确（信息不足或表现中性）
+- 6-7：明显高于平均（与岗位隐性需求匹配、简历详细真实）
+- 8-9：优秀（学校层次高、稳定且资深、简历高度可信）
+- 10：完美（多重要素同时高度匹配岗位）
+
+请不要默认给 6-7 分！5 分才是中性分。
+resume_authenticity 越高=简历越真实（1=明显包装、10=完全真实）。
+
+【关键】简历信息严重不足时（如候选人提交的文本与 JD 几乎一致、明显复制 JD 作为简历、无任何个人信息、项目、教育、工作经历），
+9 个隐性维度统一给 **5 分**（中性）：信息不足不等于“全面差”，在没有证据表明候选人本身有问题的情况下不应给 1-3 分。
+仅在可以明确判断“负面信号”时才给低分。
+
+你输出的 hidden_score 字段**会被系统覆写**，不要填，系统会从 breakdown 计算加权分。
+
 请始终以严格的 JSON 格式输出，不要输出任何解释性文字。"""
 
     def evaluate(self, position_name, tech_requirements, jd_content, resume_text,
@@ -50,6 +68,10 @@ class HiddenEvaluatorAgent(BaseAgent):
             if ir:
                 pos_implicit = json.dumps(ir, ensure_ascii=False, indent=2)
 
+        # 清理 + 截断长简历 / JD（v2.0 修复）
+        safe_resume = truncate_for_prompt(clean_resume_text(resume_text or ''), max_chars=3000)
+        safe_jd = truncate_for_prompt(jd_content or '', max_chars=1500)
+
         prompt = f"""## 任务
 你是隐性因素评估师，请**只从隐性条件和潜在风险角度**评估候选人。
 不要评估技术能力或软技能，专注挖掘简历背后的隐性信息。
@@ -60,13 +82,13 @@ class HiddenEvaluatorAgent(BaseAgent):
 ## 岗位要求
 **岗位名称：** {position_name}
 **JD 全文：**
-{jd_content or '暂无详细JD'}
+{safe_jd or '暂无详细JD'}
 
 ## 岗位隐性需求（岗位分析师已提取）
 {pos_implicit or '岗位尚未分析，请根据JD自行判断隐性需求'}
 
 ## 候选人简历
-{resume_text or '暂无'}
+{safe_resume or '暂无'}
 
 ## 评估要求
 
@@ -114,10 +136,25 @@ class HiddenEvaluatorAgent(BaseAgent):
 - 检测包装痕迹：模糊描述、缺少具体数字、"参与"≠"主导"
 - 置信度标注
 
-### 2. 隐性条件对照匹配
-将岗位的每项隐性需求与候选人实际情况做逐项对照：
-- 每个维度：岗位要什么 vs 候选人实际是什么 vs 匹配状态
-- 必须给出具体说明（detail）
+### 2. 隐性条件对照匹配（v3.6.4 精简版）
+
+将岗位隐性需求与候选人实际逐项对照，**必须输出以下 10 个维度**，缺少的维度也要以“无法判断”填充。
+
+**岗位隐性维度（6 个，从 JD 提取）：**
+1. 抗压能力（stress_tolerance）
+2. 技术领导力（management_potential）—— 非人员管理，技术深度+问题解决
+3. 沟通复杂度（communication_complexity）
+4. 稳定性期望（stability_expectation）
+5. 学历偏好（education_preference）
+6. 技术栈匹配度（隐性 tech_stack_match）
+
+**简历自身维度（4 个，从简历推断）【v3.6.4 新增】：**
+7. 简历真实度（resume_authenticity）—— 检测包装痕迹
+8. 学习能力（learning_ability）—— 从技术栈更新/自学经历推断
+9. 职业发展方向（career_direction）—— 与岗位匹配度
+10. 居住地（residence）—— 当前城市+迁移意愿
+
+每条说明 (**detail**) **≤40 字**，岗位要求与候选人实际各 **≤ 30 字**，要简洁，不要重复。
 
 ### 3. 简历真实度检测
 - "参与"≠"主导"，注意角色描述
@@ -126,6 +163,9 @@ class HiddenEvaluatorAgent(BaseAgent):
 - 技术栈罗列但无项目应用
 
 ## 输出格式（严格 JSON）
+
+**注意：`hidden_score` 字段不要填（会被系统覆写）。`hidden_score_breakdown` 必填，由系统计算加权分。**
+
 {{
     "candidate_profile": {{
         "education": {{
@@ -198,6 +238,74 @@ class HiddenEvaluatorAgent(BaseAgent):
     "hidden_highlights": [
         {{"highlight": "亮点描述", "detail": "说明"}}
     ],
-    "hidden_summary": "2-3句话的隐性条件总结评估"
+    "hidden_summary": "2-3句话的隐性条件总结评估",
+    "hidden_score_breakdown": {{
+        "education": 5,
+        "residence": 5,
+        "career_direction": 5,
+        "job_stability": 5,
+        "emotional_stability": 5,
+        "communication_ability": 5,
+        "teamwork_style": 5,
+        "learning_ability": 5,
+        "resume_authenticity": 5
+    }}
 }}"""
-        return self.think_json(prompt)
+        llm_result = self.think_json(prompt)
+        if not isinstance(llm_result, dict):
+            return llm_result
+
+        # 【v2.1 BUG B 修复】系统计算 hidden_score（9 个维度 1-10 分加权）
+        # 避免 LLM 虚高（resume_coordinator 的 20% 隐性权重依赖该值）
+        llm_result['hidden_score'] = self._compute_hidden_score(llm_result)
+        llm_result['hidden_score_source'] = 'system:9_dim_avg'
+
+        return llm_result
+
+    def _compute_hidden_score(self, llm_result):
+        """【v2.1 BUG B 修复】从 breakdown 9 个 1-10 分计算加权综合分（0-100）。
+
+        9 项平均产出 0-10 分，乘 10 转 0-100。
+        维度缺失或异常值时退回到中立 5 分。
+
+        Args:
+            llm_result: LLM 返回的 dict
+
+        Returns:
+            int: 0-100 范围的隐性匹配综合分
+        """
+        breakdown = (llm_result or {}).get('hidden_score_breakdown') or {}
+        KEYS = (
+            'education', 'residence', 'career_direction', 'job_stability',
+            'emotional_stability', 'communication_ability', 'teamwork_style',
+            'learning_ability', 'resume_authenticity',
+        )
+
+        def _val(name):
+            v = breakdown.get(name)
+            if isinstance(v, (int, float)) and 1 <= v <= 10:
+                return float(v)
+            return 5.0  # 默认中立
+
+        if not breakdown:
+            # 整个 breakdown 缺失，返回中立分
+            return 50
+
+        values = [_val(k) for k in KEYS]
+        # 只算实际提供的维度，但要求 9 个都给；如果都没给则返回 50
+        provided = [v for k, v in zip(KEYS, values) if k in breakdown]
+        if not provided:
+            return 50
+        score_10 = sum(provided) / len(provided)
+
+        # 【v2.1 兑底防 LLM 严重偏低】
+        # 当 LLM 把 9 个维度都打到 1 分（avg ≤ 2.5/10）时，
+        # 通常是“简历信息不足”而非“候选人本身有重大问题”。
+        # 强制升至 5/10（50 分）兑底，避免空简历拿 10 分。
+        if score_10 <= 2.5:
+            logger.warning(
+                f'[隐性 9 维全低] avg={score_10:.2f}/10 → 兑底升至 50 分'
+            )
+            score_10 = 5.0
+
+        return int(round(score_10 * 10))

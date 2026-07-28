@@ -1,4 +1,20 @@
-"""面试评估师 Agent - 纯粹评估本轮面试问答表现"""
+"""⚠️ DEPRECATED: 面试评估师 Agent (v1.0 单 Agent 架构)
+
+⚠️ 本文件已废弃，自 v2.0 多 Agent 架构起不再使用：
+
+✅ v2.0 替代方案：
+- 面试评估：agents.interview_project_evaluator.InterviewProjectEvaluatorAgent
+- 面试评估：agents.interview_tech_evaluator.InterviewTechEvaluatorAgent
+- 面试评估：agents.interview_soft_evaluator.InterviewSoftEvaluatorAgent
+- 汇总师：agents.interview_eval_coordinator.InterviewEvalCoordinatorAgent
+
+⚠️ 本文件作为历史代码保留，仅供查阅。引用本文件中的 EvaluatorAgent 会触发 DeprecationWarning。
+
+保留原因：v1.0 与 v2.0 架构过渡期间，业务方可能仍在引用老接口，避免强制删除破坏依赖。
+如需查看 v1.0 评估逻辑，请参考 git 历史或 ARCHIVE_README。
+
+Deprecated since: v2.0 (2026-07-15)
+"""
 from agents.base_agent import BaseAgent
 
 

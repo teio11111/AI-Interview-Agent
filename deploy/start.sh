@@ -13,7 +13,7 @@ fi
 source venv/bin/activate
 nohup python3 app.py > flask.log 2>&1 &
 echo $! > deploy/flask.pid
-sleep 3
+sleep 6
 
 if ss -tlnp 2>/dev/null | grep -q ":8088"; then
     echo "✅ 已启动  PID=$(cat deploy/flask.pid)"

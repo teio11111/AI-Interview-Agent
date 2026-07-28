@@ -1,4 +1,20 @@
-"""出题官 Agent - 专注面试问题设计"""
+"""⚠️ DEPRECATED: 出题官 Agent (v1.0 单 Agent 架构)
+
+⚠️ 本文件已废弃，自 v2.0 多 Agent 架构起不再使用：
+
+✅ v2.0 替代方案（3 个出题官 + 1 个选题官）：
+- 项目出题官：agents.project_questioner.ProjectQuestionerAgent
+- 技能出题官：agents.skill_questioner.SkillQuestionerAgent
+- 短板出题官：agents.weakness_questioner.WeaknessQuestionerAgent
+- 选题官：agents.question_coordinator.QuestionCoordinatorAgent
+
+⚠️ 本文件作为历史代码保留，仅供查阅。
+
+保留原因：v1.0 与 v2.0 架构过渡期间，业务方可能仍在引用老接口，避免强制删除破坏依赖。
+如需查看 v1.0 出题逻辑，请参考 git 历史或 ARCHIVE_README。
+
+Deprecated since: v2.0 (2026-07-15)
+"""
 from agents.base_agent import BaseAgent
 
 

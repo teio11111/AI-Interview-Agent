@@ -7,6 +7,16 @@ function Write-Step($msg) { Write-Host "`n▶ $msg" -ForegroundColor Cyan }
 function Write-OK($msg)    { Write-Host "  ✅ $msg" -ForegroundColor Green }
 function Write-Err($msg)   { Write-Host "  ❌ $msg" -ForegroundColor Red }
 
+# 0. 错误处理：捕获所有未处理的异常并详细输出
+trap {
+    Write-Host "`n❌ 未捕获的异常:" -ForegroundColor Red
+    Write-Host "  类型: $($_.Exception.GetType().FullName)" -ForegroundColor Yellow
+    Write-Host "  消息: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "  堆栈: $($_.ScriptStackTrace)" -ForegroundColor Gray
+    pause
+    exit 1
+}
+
 # 1. 定位项目根目录（脚本在 deploy/ 下，往上一级）
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir

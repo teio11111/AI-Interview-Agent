@@ -56,16 +56,16 @@
 
     <div class="row">
         <!-- 左侧：问题 + 实时对话 -->
-        <div class="col-md-8">
+        <div class="col-md-9">
             <!-- 面试问题面板 -->
             <div class="card mb-3" id="questionsCard" style="display:none;">
-                <div class="card-header d-flex justify-content-between align-items-center py-2" 
+                <div class="card-header d-flex justify-content-between align-items-center py-2"
                      data-bs-toggle="collapse" data-bs-target="#questionsCollapse" style="cursor:pointer;">
                     <h6 class="mb-0"><i class="bi bi-list-check me-1"></i>面试问题 <span class="badge bg-primary ms-1" id="questionsCount">0</span></h6>
                     <i class="bi bi-chevron-down"></i>
                 </div>
                 <div class="collapse show" id="questionsCollapse">
-                    <div class="card-body py-2" id="questionsList" style="max-height:200px; overflow-y:auto;">
+                    <div class="card-body py-2" id="questionsList" style="max-height:240px; overflow-y:auto;">
                     </div>
                 </div>
             </div>
@@ -81,7 +81,7 @@
                         </button>
                     </div>
                 </div>
-                <div class="card-body" style="height: 420px; overflow-y: auto;" id="dialogContainer">
+                <div class="card-body" style="height: 540px; overflow-y: auto;" id="dialogContainer">
                     <div class="text-center text-muted py-5" id="dialogPlaceholder">
                         <i class="bi bi-mic-mute" style="font-size: 3rem;"></i>
                         <p class="mt-3">选择候选人并生成问题，然后点击"开始面试"</p>
@@ -89,20 +89,20 @@
                 </div>
             </div>
         </div>
-        
-        <!-- 右侧：控制面板 -->
-        <div class="col-md-4">
-            <!-- 角色切换 -->
+
+        <!-- 右侧：控制面板（压窄版） -->
+        <div class="col-md-3">
+            <!-- 角色切换 + 当前说话人 （合并为一张紧凑卡片） -->
             <div class="card mb-3">
                 <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                    <h6 class="mb-0"><i class="bi bi-people-fill me-1"></i>角色切换</h6>
+                    <h6 class="mb-0"><i class="bi bi-people-fill me-1"></i>角色控制</h6>
                     <div class="form-check form-switch mb-0">
                         <input class="form-check-input" type="checkbox" id="autoModeSwitch" checked onchange="toggleAutoMode(this.checked)">
                         <label class="form-check-label small" for="autoModeSwitch">自动</label>
                     </div>
                 </div>
                 <div class="card-body py-2">
-                    <div class="btn-group w-100" role="group">
+                    <div class="btn-group w-100 btn-group-sm" role="group">
                         <button id="btnRoleInterviewer" class="btn btn-outline-primary" onclick="manualSetRole('interviewer')">
                             <i class="bi bi-person-badge"></i> 面试官
                         </button>
@@ -111,33 +111,36 @@
                         </button>
                     </div>
                     <div id="roleStatus" class="text-center small text-muted mt-2">未选择角色</div>
+                    <hr class="my-2">
+                    <div id="currentSpeaker" class="fw-bold text-muted text-center" style="font-size:1.1rem;">等待中...</div>
                 </div>
             </div>
-            
-            <!-- 当前说话人 -->
+
+            <!-- AI 实时分析（默认折叠，新结果出现时 badge 提醒） -->
             <div class="card mb-3">
-                <div class="card-body text-center py-3">
-                    <div id="currentSpeaker" class="fw-bold text-muted" style="font-size:1.3rem;">等待中...</div>
-                </div>
-            </div>
-            
-            <!-- AI 实时分析 -->
-            <div class="card mb-3">
-                <div class="card-header py-2">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center"
+                     data-bs-toggle="collapse" data-bs-target="#aiAnalysisCollapse" style="cursor:pointer;">
                     <h6 class="mb-0"><i class="bi bi-robot me-1"></i>AI 实时分析 <span class="badge bg-secondary ms-1" id="analysisCount" style="display:none;">0</span></h6>
+                    <i class="bi bi-chevron-down"></i>
                 </div>
-                <div class="card-body py-2" id="aiAnalysis" style="max-height: 350px; overflow-y: auto;">
-                    <p class="text-muted small mb-0">等待候选人回答...</p>
+                <div class="collapse show" id="aiAnalysisCollapse">
+                    <div class="card-body py-2" id="aiAnalysis" style="max-height: 300px; overflow-y: auto;">
+                        <p class="text-muted small mb-0">等待候选人回答...</p>
+                    </div>
                 </div>
             </div>
-            
-            <!-- 建议追问 -->
+
+            <!-- 建议追问（默认折叠） -->
             <div class="card">
-                <div class="card-header py-2">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center"
+                     data-bs-toggle="collapse" data-bs-target="#suggestedCollapse" style="cursor:pointer;">
                     <h6 class="mb-0"><i class="bi bi-chat-dots me-1"></i>建议追问</h6>
+                    <i class="bi bi-chevron-down"></i>
                 </div>
-                <div class="card-body py-2" id="suggestedQuestions">
-                    <p class="text-muted small mb-0">暂无建议</p>
+                <div class="collapse show" id="suggestedCollapse">
+                    <div class="card-body py-2" id="suggestedQuestions">
+                        <p class="text-muted small mb-0">暂无建议</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -361,46 +364,44 @@ function onCandidateChange() {
     document.getElementById('roundBadge').textContent = `第${nextRound}轮`;
     document.getElementById('statusBadge').className = 'badge bg-secondary me-1';
     document.getElementById('statusBadge').textContent = '待生成问题';
-    
+
     // 显示"生成问题"按钮
+    // 已有 N 轮完成会话的候选人，按钮文案提示"开始新一轮面试"更明确
     document.getElementById('btnGenerate').classList.remove('d-none');
     document.getElementById('btnGenerate').disabled = false;
-    document.getElementById('btnGenerate').innerHTML = '<i class="bi bi-lightning-charge"></i> 生成问题';
+    document.getElementById('btnGenerate').innerHTML = existingRounds > 0
+        ? '<i class="bi bi-plus-circle"></i> 开始新一轮面试'
+        : '<i class="bi bi-lightning-charge"></i> 生成问题';
     document.getElementById('btnStartInterview').classList.add('d-none');
-    
+
     // 尝试恢复进行中的会话（刷新页面后不丢失对话）
     restoreActiveSession(selectedCandidateId);
 }
 
 // ========== 恢复进行中会话 ==========
+// 【设计修复】只对 in_progress / preparing 状态的会话自动恢复。
+// 已结束（completed）的会话由用户主动从历史会话查看报告，
+// 这里不要自动恢复——避免误导用户以为自己开始了新一轮面试。
 async function restoreActiveSession(candidateId) {
-    // 优先查找 in_progress 或 preparing 会话
     let targetSession = allSessions
         .filter(s => s.candidate_id === candidateId && (s.status === 'in_progress' || s.status === 'preparing'))
         .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
-    
-    // 如果没有活跃会话，查找最近的 completed 会话（只读查看）
-    if (!targetSession) {
-        targetSession = allSessions
-            .filter(s => s.candidate_id === candidateId && s.status === 'completed')
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
-    }
-    
+
     if (!targetSession) return;
-    
+
     try {
         const res = await apiCall(`/api/interviews/${targetSession.id}`);
         const { session, dialogs } = res.data;
-        
+
         // 恢复会话状态
         currentInterviewSession = session;
-        
+
         // 恢复问题列表
         if (session.questions_plan) {
             const questions = typeof session.questions_plan === 'string' ? JSON.parse(session.questions_plan) : session.questions_plan;
             renderQuestions(questions);
         }
-        
+
         // 恢复对话记录
         if (dialogs && dialogs.length > 0) {
             document.getElementById('dialogContainer').innerHTML = '';
@@ -417,27 +418,22 @@ async function restoreActiveSession(candidateId) {
             });
             updateDialogCount();
         }
-        
+
         // 更新UI状态
         if (session.status === 'in_progress') {
             document.getElementById('statusBadge').textContent = '进行中';
             document.getElementById('statusBadge').className = 'badge bg-success me-1';
             document.getElementById('btnGenerate').classList.add('d-none');
             document.getElementById('btnStartInterview').classList.remove('d-none');
+            showToast('已恢复进行中的面试会话', 'info');
         } else if (session.status === 'preparing') {
             document.getElementById('statusBadge').textContent = '准备中';
             document.getElementById('statusBadge').className = 'badge bg-info me-1';
             document.getElementById('btnGenerate').classList.add('d-none');
             document.getElementById('btnStartInterview').classList.remove('d-none');
-        } else if (session.status === 'completed') {
-            document.getElementById('statusBadge').textContent = '已完成（第' + allSessions.filter(s => s.candidate_id === candidateId && s.status === 'completed').length + '轮）';
-            document.getElementById('statusBadge').className = 'badge bg-secondary me-1';
-            document.getElementById('btnGenerate').classList.remove('d-none');
-            document.getElementById('btnGenerate').innerHTML = '<i class="bi bi-plus-circle"></i> 开始新一轮面试';
-            document.getElementById('btnStartInterview').classList.add('d-none');
+            showToast('已恢复准备中的面试会话', 'info');
         }
-        
-        showToast('已恢复上次面试会话', 'info');
+        // 注：completed 状态不进入此处，UI 会继续保留 onCandidateChange 默认的"开始新一轮"状态
     } catch(e) {
         console.error('恢复会话失败:', e);
     }
@@ -629,7 +625,33 @@ function endInterview() {
                 if (report.overall_score) {
                     // overall_score 是 0-100 分制，转换为 10 分制显示
                     const score10 = Math.min(10, Math.max(1, Math.round(report.overall_score / 10)));
-                    reportHtml += `<div class="mb-1">综合评分: <span class="badge bg-primary">${score10}/10</span> <small class="text-muted">(${report.overall_score}/100)</small></div>`;
+                    // 【Bug 修复】同时显示推荐等级标签，避免 41/100 看起来像中等分
+                    const rec = report.recommendation || '';
+                    const recColor = rec === '强烈推荐' ? 'success'
+                                   : rec === '推荐' ? 'primary'
+                                   : rec === '待定' ? 'warning'
+                                   : rec ? 'danger' : 'secondary';
+                    reportHtml += `<div class="mb-1">综合评分: <span class="badge bg-primary">${score10}/10</span> <small class="text-muted">(${report.overall_score}/100)</small>` +
+                                  (rec ? ` <span class="badge bg-${recColor}">${rec}</span>` : '') +
+                                  `</div>`;
+                    // 显示计算明细（让综合分与单轮分的脱钩问题透明化）
+                    if (report.computation) {
+                        const c = report.computation;
+                        const sr = c.single_round_score_100;
+                        const cr = c.coord_5dim_100;
+                        const formula = c.formula || '';
+                        let detailHtml = `<div class="small text-muted mb-1"><i class="bi bi-calculator me-1"></i>`;
+                        if (sr !== null && sr !== undefined && cr !== null && cr !== undefined) {
+                            detailHtml += `单轮实时平均分 ${sr}/100 × 60% + 汇总师5维分 ${cr}/100 × 40% = ${report.overall_score}/100`;
+                        } else if (cr !== null && cr !== undefined) {
+                            detailHtml += `汇总师5维加权 ${cr}/100（未提供单轮评分，退回到纯汇总师算法）`;
+                        }
+                        if (c.single_round_avg) {
+                            detailHtml += `（单轮对话平均 ${c.single_round_avg}/10）`;
+                        }
+                        detailHtml += `</div>`;
+                        reportHtml += detailHtml;
+                    }
                 }
                 if (report.summary) {
                     reportHtml += `<p class="small mb-0">${report.summary.substring(0, 200)}${report.summary.length > 200 ? '...' : ''}</p>`;

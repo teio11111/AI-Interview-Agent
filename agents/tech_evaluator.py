@@ -1,5 +1,6 @@
 """技术评估师 Agent - 专注技术技能匹配度评估"""
 from agents.base_agent import BaseAgent
+from utils.text_truncate import truncate_for_prompt, clean_resume_text
 
 
 class TechEvaluatorAgent(BaseAgent):
@@ -48,6 +49,10 @@ class TechEvaluatorAgent(BaseAgent):
             if cs:
                 pos_skills = json.dumps(cs, ensure_ascii=False, indent=2)
 
+        # 清理 + 截断长简历 / JD，防止 prompt 撑爆（v2.3 精简：简历 3000 / JD 1500，缩短 LLM 处理时间）
+        safe_resume = truncate_for_prompt(clean_resume_text(resume_text or ''), max_chars=3000)
+        safe_jd = truncate_for_prompt(jd_content or '', max_chars=1500)
+
         prompt = f"""## 任务
 你是技术评估师，请**只从技术能力角度**评估候选人简历与岗位的匹配度。
 不要评估沟通能力、团队协作、学历背景等非技术因素。
@@ -59,13 +64,13 @@ class TechEvaluatorAgent(BaseAgent):
 **岗位名称：** {position_name}
 **技术要求：** {tech_requirements or '暂无'}
 **JD 全文：**
-{jd_content or '暂无详细JD'}
+{safe_jd or '暂无详细JD'}
 
 ## 岗位核心技能要求（岗位分析师已提取）
 {pos_skills or '岗位尚未分析，请根据JD自行判断'}
 
 ## 候选人简历
-{resume_text or '暂无'}
+{safe_resume or '暂无'}
 
 ## 评估要求
 
@@ -74,12 +79,13 @@ class TechEvaluatorAgent(BaseAgent):
 - 匹配的技能：标注熟练度（精通/熟练/了解/基础）和简历证据
 - 缺失的技能：标注重要程度（核心/重要/次要）和缺失影响
 
-### 2. 技术深度评分（0-100）
+### 2. 技术深度评分（tech_depth_score，0-100 分制）
 - 90-100：核心技术全部精通，有深度项目经验
 - 75-89：核心技术基本熟练，个别技能欠缺
 - 60-74：基础能力具备但有明显短板
 - 40-59：多项核心技能缺失或停留在理论
 - 0-39：技术要求与经验差距较大
+- **注意：必须是 0-100 整数，不要给 1-10 分制！**（历史上曾出现 5/10 被误读成 5/100 = 5 分的严重 bug）
 
 ### 3. 技术风险识别
 - 经验深度不足（项目太简单或太短）
