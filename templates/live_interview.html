@@ -149,7 +149,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script src="/static/socket.io.min.js"></script>
 <script>
 // ========== 全局状态 ==========
 let socket = null;
@@ -770,8 +770,9 @@ function toggleAutoMode(enabled) {
 function initSocket() {
     // waitress 不支持 WebSocket，强制 polling 传输
     socket = io({ transports: ['polling'] });
-    socket.on('connect', () => { console.log('SocketIO 已连接 (polling)'); });
-    socket.on('asr_result', (data) => { handleASRResult(data); });
+    socket.on('connect', () => { console.log('[SocketIO] connected (polling), sid=' + socket.id); });
+    socket.on('connect_error', (err) => { console.error('[SocketIO] connect_error:', err.message); });
+    socket.on('asr_result', (data) => { console.log('[SocketIO] asr_result:', data.text, 'final=' + data.is_final); handleASRResult(data); });
     socket.on('speaker_change', (data) => { handleSpeakerChange(data.speaker); });
 }
 
