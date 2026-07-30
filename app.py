@@ -76,20 +76,21 @@ def create_app():
     return app
 
 
+# SocketIO 事件处理（必须在 create_app 外注册，否则 waitress-serve --call 启动时不会执行）
+from flask_socketio import join_room, leave_room
+
+@socketio.on('join')
+def handle_join(room):
+    join_room(room)
+    logger.info(f'[SocketIO] 客户端加入房间: {room}')
+
+@socketio.on('leave')
+def handle_leave(room):
+    leave_room(room)
+
+
 if __name__ == '__main__':
     app = create_app()
-
-    # SocketIO 事件处理
-    from flask_socketio import join_room, leave_room
-
-    @socketio.on('join')
-    def handle_join(room):
-        join_room(room)
-        logger.info(f'[SocketIO] 客户端加入房间: {room}')
-
-    @socketio.on('leave')
-    def handle_leave(room):
-        leave_room(room)
 
     # 【v3.1 修复】改用 waitress 提供 WSGI 服务
     # 原 socketio.run(app, ..., allow_unsafe_werkzeug=True) 用的是 Werkzeug dev server，
