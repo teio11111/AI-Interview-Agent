@@ -9,6 +9,7 @@ import websocket
 import threading
 from urllib.parse import urlencode, quote
 from datetime import datetime
+from utils import beijing_now
 from utils.logger import logger
 
 
@@ -259,7 +260,7 @@ class ASRSession:
                     self.result_buffer.append({
                         'text': text,
                         'speaker': speaker,
-                        'timestamp': datetime.now().isoformat()
+                        'timestamp': beijing_now().isoformat()
                     })
                 
         except Exception as e:

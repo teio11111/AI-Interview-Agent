@@ -6,6 +6,42 @@
 
 ---
 
+## [v3.3] - 2026-07-29 - 项目级北京时间
+
+### Changed
+- `app.py` 启动时为当前 Flask 进程设置 `TZ=Asia/Shanghai`，`datetime.now()` 在云服务器 UTC 环境下也返回北京时间
+- `deploy/start.sh` 激活 venv 前 `export TZ=Asia/Shanghai`，双保险
+- `utils/beijing_now()` 统一封装，所有 `datetime.now()` 调用改为 `beijing_now()`
+- `models/base.py` 默认值、`services/agent_orchestrator.py` 时间戳、`services/asr_service.py` 时间戳、`utils/meta_evaluation_pdf.py` 生成时间均统一改为北京时间
+
+### Fixed
+- 云服务器（系统时区 UTC）上所有时间生成和入库均偏移 8 小时的 BUG
+- 云端历史 UTC 数据一次性 +8 小时回填（25 条记录：1 candidate / 1 session / 1 topic / 13 operation_log / 2 position / 7 user）
+
+### Notes
+- 不修改云服务器全局时区，仅在项目进程内设置，避免影响服务器上其他项目
+
+---
+
+## [v3.2] - 2026-07-28 - 代码精简与安全加固
+
+### Removed
+- v1.0 废弃 Agent 物理删除（evaluator.py / resume_evaluator.py / question_designer.py）
+- 候选人门户路由与模板全量删除（routes/candidate_portal_routes.py + templates/candidate_portal.html）
+- 重复的面试对话接口：`/api/interviews/<id>/follow-up` 与 `/api/interviews/dialog/evaluate` 合并到统一接口
+- interview_routes.py 死 import（InterviewSession/InterviewDialog/InterviewTopic 从未在路由中直接使用）
+
+### Changed
+- 面试对话接口统一：`POST /api/interviews/<session_id>/dialog` 现在同时支持追问（`parent_seq` 字段）与实时面试两种场景，返回结构统一为 `{dialog, feedback}`
+- 登录接口加入「登录失败」审计（密码错 + 候选人试图访问门户均记录 IP），审计页新增「登录失败」选项
+- 候选人门户下线后非 admin 访问路径自动跳登录页（而非错误跳转）
+
+### Fixed
+- 面试接口重复逻辑收敛：`add_dialog` / `evaluate_dialog` 合并为同一函数
+- auth_routes.py 清理 dead code（候选人门户 redirect 字段）
+
+---
+
 ## [v3.1] - 2026-07-28 - 多账号 + 操作审计
 
 ### Added

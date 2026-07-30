@@ -3,7 +3,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import BoundedSemaphore
 from flask import current_app
 import time
-from datetime import datetime
 
 from agents import (
     PositionAnalystAgent,
@@ -25,6 +24,7 @@ from agents import (
     TopicSegmenterAgent,
     ComprehensiveMetaEvaluatorAgent,
 )
+from utils import beijing_now
 from utils.logger import logger
 
 
@@ -105,7 +105,7 @@ class AgentOrchestrator:
                     'agent': agent_name,
                     'stage': stage,
                     'message': message,
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': beijing_now().isoformat(),
                 }
                 if percent is not None:
                     payload['percent'] = percent

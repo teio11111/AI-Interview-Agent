@@ -19,9 +19,8 @@ def login_page():
         if user:
             if user.role == 'admin':
                 return redirect(url_for('home.index'))
-            else:
-                # 【隐藏】候选人门户已下线，清除 session 强制回登录页
-                session.clear()
+            # 【隐藏】候选人门户已下线，非 admin 自动清 session 回登录页
+            session.clear()
     return render_template('login.html')
 
 
@@ -32,12 +31,20 @@ def login():
     if not data or not data.get('username') or not data.get('password'):
         return error('用户名和密码不能为空', 400)
 
-    user = User.query.filter_by(username=data['username']).first()
+    username = data['username']
+    user = User.query.filter_by(username=username).first()
     if not user or not verify_password(user.password_hash, data['password']):
+        # 审计：登录失败（防止暴力破解无可追溯）
+        log_operation('login_fail', 'user', user.id if user else None, username,
+                      f'IP={request.remote_addr or "-"}')
+        logger.warning(f'登录失败: username={username}, ip={request.remote_addr}')
         return error('用户名或密码错误', 401)
 
     # 【隐藏】候选人门户已下线，拒绝候选人登录
     if user.role != 'admin':
+        # 审计：候选人试图登录（门户已下线）
+        log_operation('login_fail', 'user', user.id, username,
+                      f'门户已下线, role={user.role}, IP={request.remote_addr or "-"}')
         return error('候选人门户已下线，请使用管理员账号登录', 403)
 
     session['user_id'] = user.id
@@ -45,8 +52,7 @@ def login():
     logger.info(f'用户 {user.username} 登录成功 (role={user.role})')
     log_operation('login', 'user', user.id, user.username)
 
-    redirect_url = '/' if user.role == 'admin' else '/candidate'
-    return success({'user': user.to_dict(), 'redirect': redirect_url})
+    return success({'user': user.to_dict(), 'redirect': '/'})
 
 
 @auth_bp.route('/api/auth/register', methods=['POST'])

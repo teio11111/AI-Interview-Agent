@@ -1,7 +1,18 @@
-import PyPDF2
 import io
 import re
 from utils.logger import logger
+
+try:
+    import pdfplumber
+    _HAS_PDFPLUMBER = True
+except ImportError:
+    _HAS_PDFPLUMBER = False
+
+try:
+    import PyPDF2
+    _HAS_PYPDF2 = True
+except ImportError:
+    _HAS_PYPDF2 = False
 
 
 def _clean_pdf_extracted_text(text):
@@ -129,10 +140,50 @@ def _clean_pdf_extracted_text(text):
     return cleaned
 
 
+def _extract_with_pdfplumber(file_stream):
+    """使用 pdfplumber 提取 PDF 文本（对中文 PDF 支持更好）"""
+    import io as _io
+    raw_bytes = file_stream.read()
+    file_stream.seek(0)
+    with pdfplumber.open(_io.BytesIO(raw_bytes)) as pdf:
+        text = ''
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + '\n'
+        page_count = len(pdf.pages)
+    return text, page_count
+
+
+def _extract_with_pypdf2(file_stream):
+    """使用 PyPDF2 提取 PDF 文本（兜底方案）"""
+    file_stream.seek(0)
+    reader = PyPDF2.PdfReader(file_stream)
+    text = ''
+    for page in reader.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text + '\n'
+    return text, len(reader.pages)
+
+
+def _is_garbled(text):
+    """检测提取的文本是否乱码（非 ASCII 非中文字符占比 > 15%）"""
+    if not text or not text.strip():
+        return True
+    total = len(text)
+    chinese = sum(1 for ch in text if '\u4e00' <= ch <= '\u9fff')
+    ascii_chars = sum(1 for ch in text if ord(ch) < 128)
+    garbled = total - chinese - ascii_chars
+    ratio = garbled / total if total else 0
+    return ratio > 0.15
+
+
 def extract_text_from_pdf(file_stream):
     """从 PDF 文件流中提取文本
 
-    包含 PyPDF2 后处理清洗（处理字符级切碎 + 末尾 hash 漏出）。
+    双引擎策略：优先 pdfplumber（中文 PDF 支持好），
+    乱码或失败时 fallback 到 PyPDF2，再经过后处理清洗。
 
     Args:
         file_stream: 上传文件的字节流
@@ -140,22 +191,39 @@ def extract_text_from_pdf(file_stream):
     Returns:
         str: 提取并清洗后的文本内容，失败时返回 None
     """
-    try:
-        reader = PyPDF2.PdfReader(file_stream)
-        text = ''
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + '\n'
+    text = None
+    page_count = 0
+    engine_used = None
 
-        if text.strip():
-            text = _clean_pdf_extracted_text(text.strip())
-            logger.info(f'PDF 解析成功，共 {len(reader.pages)} 页，提取 {len(text)} 字符')
-            return text
-        else:
-            logger.warning('PDF 解析完成但未提取到文本（可能是扫描件）')
-            return None
+    # 1. 优先 pdfplumber
+    if _HAS_PDFPLUMBER:
+        try:
+            result_text, result_pages = _extract_with_pdfplumber(file_stream)
+            if result_text.strip() and not _is_garbled(result_text):
+                text = result_text
+                page_count = result_pages
+                engine_used = 'pdfplumber'
+            else:
+                logger.info(f'[PDF] pdfplumber 提取结果疑似乱码，尝试 PyPDF2 兜底')
+        except Exception as e:
+            logger.warning(f'[PDF] pdfplumber 提取失败: {e}，尝试 PyPDF2 兜底')
 
-    except Exception as e:
-        logger.error(f'PDF 解析失败: {e}')
-        return None
+    # 2. fallback PyPDF2
+    if text is None and _HAS_PYPDF2:
+        try:
+            result_text, result_pages = _extract_with_pypdf2(file_stream)
+            if result_text.strip():
+                text = result_text
+                page_count = result_pages
+                engine_used = 'PyPDF2'
+        except Exception as e:
+            logger.error(f'[PDF] PyPDF2 也失败了: {e}')
+
+    # 3. 后处理清洗
+    if text and text.strip():
+        text = _clean_pdf_extracted_text(text.strip())
+        logger.info(f'[PDF] {engine_used} 解析成功，{page_count} 页，{len(text)} 字符')
+        return text
+
+    logger.warning('[PDF] 所有引擎均未提取到有效文本（可能是扫描件）')
+    return None

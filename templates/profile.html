@@ -64,10 +64,11 @@ let totalPages = 1;
 // 各类对象对应的子操作（key = target_type）
 const SUB_ACTIONS = {
     user: [
-        { action: 'login',           label: '登录' },
-        { action: 'logout',          label: '登出' },
-        { action: 'change_password', label: '改密码' },
-        { action: 'change_username', label: '改名' },
+        { action: 'login',            label: '登录成功' },
+        { action: 'login_fail',       label: '登录失败' },
+        { action: 'logout',           label: '登出' },
+        { action: 'change_password',  label: '改密码' },
+        { action: 'change_username',  label: '改名' },
     ],
     interview_session: [
         { action: 'create',           label: '创建' },
@@ -88,7 +89,8 @@ const SUB_ACTIONS = {
 
 // 操作类型映射（与后端 log_operation 第一个参数保持一致）
 const ACTION_MAP = {
-    login:            { label: '登录',     icon: 'bi-box-arrow-in-right', color: 'success' },
+    login:            { label: '登录成功', icon: 'bi-box-arrow-in-right', color: 'success' },
+    login_fail:       { label: '登录失败', icon: 'bi-shield-x',           color: 'danger' },
     logout:           { label: '登出',     icon: 'bi-box-arrow-left',     color: 'secondary' },
     create:           { label: '创建',     icon: 'bi-plus-circle',        color: 'primary' },
     finish_interview: { label: '结束面试', icon: 'bi-check-circle',       color: 'success' },

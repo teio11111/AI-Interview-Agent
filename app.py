@@ -1,3 +1,11 @@
+import os
+import time
+
+# 仅设置当前 Flask 进程时区，不修改云服务器全局配置。
+os.environ['TZ'] = 'Asia/Shanghai'
+if hasattr(time, 'tzset'):
+    time.tzset()
+
 from flask import Flask, redirect, url_for
 from extensions import db, socketio
 from utils.logger import logger
@@ -22,7 +30,6 @@ def create_app():
     from routes.candidate_routes import candidate_bp
     from routes.interview_routes import interview_bp, home_bp
     from routes.auth_routes import auth_bp
-    from routes.candidate_portal_routes import candidate_portal_bp
     from routes.stream_routes import stream_bp
     from routes.asr_routes import asr_bp
     from routes.audit_routes import audit_bp
@@ -31,7 +38,6 @@ def create_app():
     app.register_blueprint(position_bp)
     app.register_blueprint(candidate_bp)
     app.register_blueprint(interview_bp)
-    app.register_blueprint(candidate_portal_bp)
     app.register_blueprint(stream_bp)
     app.register_blueprint(asr_bp)
     app.register_blueprint(audit_bp)

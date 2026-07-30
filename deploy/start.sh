@@ -10,6 +10,9 @@ if ss -tlnp 2>/dev/null | grep -q ":8088"; then
     exit 1
 fi
 
+# 仅设置项目进程时区，不改服务器全局配置
+export TZ=Asia/Shanghai
+
 source venv/bin/activate
 nohup python3 app.py > flask.log 2>&1 &
 echo $! > deploy/flask.pid

@@ -5,7 +5,6 @@
 import io
 import os
 import platform
-from datetime import datetime
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
@@ -23,6 +22,7 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from utils import beijing_now
 
 
 # =================== 字体加载（跨平台兼容） ===================
@@ -33,12 +33,20 @@ _FONT_BOLD_NAME = None
 
 
 def _find_chinese_font_path():
-    """跨平台寻找中文字体 TTF 路径。优先 ttf（reportlab 对 ttc 集合字体支持不佳）。"""
+    """跨平台寻找中文字体 TTF 路径。优先项目内置字体，再找系统字体。"""
     system = platform.system()
 
     # 候选文件（按优先级）
     candidates = []
 
+    # 1. 项目内置字体（最高优先级，确保云端无中文字体也能正常渲染）
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.extend([
+        os.path.join(project_root, 'fonts', 'simhei.ttf'),
+        os.path.join(project_root, 'fonts', 'msyh.ttf'),
+    ])
+
+    # 2. 系统字体
     if system == 'Windows':
         win = 'C:/Windows/Fonts'
         candidates.extend([
@@ -334,7 +342,7 @@ def generate_meta_evaluation_pdf(candidate_dict, position_dict, evaluation_dict,
 
     # 报告生成时间
     story.append(Paragraph(
-        f'生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+        f'生成时间：{beijing_now().strftime("%Y-%m-%d %H:%M:%S")}',
         styles['CN_Small']
     ))
 
@@ -618,7 +626,7 @@ def generate_meta_evaluation_pdf(candidate_dict, position_dict, evaluation_dict,
 
     # 写入页脚的生成时间
     import time
-    doc._gen_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    doc._gen_time = beijing_now().strftime('%Y-%m-%d %H:%M:%S')
 
     # 保存生成时间供页脚使用
     import builtins

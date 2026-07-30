@@ -153,7 +153,7 @@
 <script>
 // ========== 全局状态 ==========
 let socket = null;
-let audioContext = null, audioProcessor = null, audioStream = null;
+let audioContext = null, audioProcessor = null;
 let isRecording = false;
 let asrSessionId = null;
 let dialogHistory = [];
@@ -768,8 +768,9 @@ function toggleAutoMode(enabled) {
 
 // ========== WebSocket ==========
 function initSocket() {
-    socket = io();
-    socket.on('connect', () => { console.log('WebSocket 已连接'); });
+    // waitress 不支持 WebSocket，强制 polling 传输
+    socket = io({ transports: ['polling'] });
+    socket.on('connect', () => { console.log('SocketIO 已连接 (polling)'); });
     socket.on('asr_result', (data) => { handleASRResult(data); });
     socket.on('speaker_change', (data) => { handleSpeakerChange(data.speaker); });
 }
@@ -801,6 +802,10 @@ function handleSpeakerChange(speaker) {
     lastDetectedSpeaker = speaker;
 }
 
+// ========== 音频流变量 ==========
+let systemAudioStream = null;  // 系统音频流（线上会议候选人声音）
+let micAudioStream = null;     // 麦克风音频流（面试官声音）
+
 // ========== ASR 控制 ==========
 async function startASR() {
     if (!currentInterviewSession) {
@@ -811,12 +816,99 @@ async function startASR() {
     cleanupAudio();
     
     try {
-        audioStream = await navigator.mediaDevices.getUserMedia({ 
+        // 第一步：尝试捕获系统音频（用于线上会议场景）
+        let useSystemAudio = false;
+        let systemAudioTrack = null;
+        
+        // 提示用户选择音频捕获模式
+        const useOnlineMode = confirm(
+            '是否进行线上面试？\n\n' +
+            '点击"确定"：捕获系统音频（候选人声音）+ 麦克风（面试官声音）\n' +
+            '点击"取消"：仅使用麦克风（线下面试）\n\n' +
+            '提示：选择"确定"后，请在弹出的共享框中勾选"分享系统音频"'
+        );
+        
+        if (useOnlineMode) {
+            try {
+                showToast('正在请求系统音频权限...', 'info');
+                const displayStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: true,   // getDisplayMedia 必须请求视频
+                    audio: true    // 关键：捕获系统音频
+                });
+                
+                // 获取系统音频轨道
+                const sysTracks = displayStream.getAudioTracks();
+                if (sysTracks.length > 0) {
+                    systemAudioTrack = sysTracks[0];
+                    useSystemAudio = true;
+                    showToast('系统音频捕获成功', 'success');
+                } else {
+                    showToast('未检测到系统音频，将仅使用麦克风', 'warning');
+                }
+                
+                // 停止视频轨道（不需要录屏）
+                displayStream.getVideoTracks().forEach(t => t.stop());
+                
+                // 监听用户停止共享
+                displayStream.addEventListener('inactive', () => {
+                    if (isRecording) {
+                        showToast('屏幕共享已停止，语音识别将中断', 'warning');
+                        stopASR();
+                    }
+                });
+                
+                systemAudioStream = displayStream;
+            } catch (err) {
+                if (err.name === 'NotAllowedError') {
+                    showToast('用户取消共享或未勾选"分享系统音频"，将仅使用麦克风', 'warning');
+                } else {
+                    showToast('系统音频捕获失败: ' + err.message + '，将仅使用麦克风', 'warning');
+                }
+            }
+        }
+        
+        // 第二步：捕获麦克风音频
+        showToast('正在请求麦克风权限...', 'info');
+        micAudioStream = await navigator.mediaDevices.getUserMedia({ 
             audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } 
         });
         
+        // 第三步：创建音频上下文
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        const source = audioContext.createMediaStreamSource(audioStream);
+        
+        // 第四步：混合音频流
+        let finalStream;
+        
+        if (useSystemAudio && systemAudioTrack) {
+            // 双流混合模式：麦克风 + 系统音频
+            const micSource = audioContext.createMediaStreamSource(micAudioStream);
+            const systemSource = audioContext.createMediaStreamSource(
+                new MediaStream([systemAudioTrack])
+            );
+            
+            // 创建增益节点（可选：调节两路音量比例）
+            const micGain = audioContext.createGain();
+            const systemGain = audioContext.createGain();
+            micGain.gain.value = 1.0;    // 麦克风音量 100%
+            systemGain.gain.value = 1.0; // 系统音频音量 100%
+            
+            // 创建混合输出
+            const destination = audioContext.createMediaStreamDestination();
+            micSource.connect(micGain);
+            systemSource.connect(systemGain);
+            micGain.connect(destination);
+            systemGain.connect(destination);
+            
+            finalStream = destination.stream;
+            showToast('双流模式已启动：麦克风 + 系统音频', 'success');
+        } else {
+            // 仅麦克风模式
+            finalStream = micAudioStream;
+            showToast('单流模式已启动：仅麦克风', 'success');
+        }
+        
+        // 第五步：处理混合后的音频
+        const source = audioContext.createMediaStreamSource(finalStream);
         audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
         source.connect(audioProcessor);
         audioProcessor.connect(audioContext.destination);
@@ -845,7 +937,9 @@ async function startASR() {
                 sendAudioChunk(pcmData, asrSessionId);
             };
             
-            showToast('语音识别已启动', 'success');
+            // 显示当前模式
+            const modeText = useSystemAudio ? '线上模式（双流）' : '线下模式（单流）';
+            showToast(`语音识别已启动 - ${modeText}`, 'success');
         } else {
             cleanupAudio();
             showToast('启动失败', 'danger');
@@ -859,7 +953,8 @@ async function startASR() {
 function cleanupAudio() {
     isRecording = false;
     if (audioProcessor) { audioProcessor.onaudioprocess = null; audioProcessor.disconnect(); audioProcessor = null; }
-    if (audioStream) { audioStream.getTracks().forEach(t => t.stop()); audioStream = null; }
+    if (micAudioStream) { micAudioStream.getTracks().forEach(t => t.stop()); micAudioStream = null; }
+    if (systemAudioStream) { systemAudioStream.getTracks().forEach(t => t.stop()); systemAudioStream = null; }
     if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
 }
 
@@ -1186,8 +1281,8 @@ async function triggerAIAnalysis(answer, question) {
     div.insertAdjacentHTML('afterbegin', loadingHtml);
 
     try {
-        const res = await apiCall('/api/interviews/dialog/evaluate', 'POST', {
-            answer, question: question || '', session_id: currentInterviewSession.id, context: dialogHistory.slice(-5)
+        const res = await apiCall(`/api/interviews/${currentInterviewSession.id}/dialog`, 'POST', {
+            answer, question: question || ''
         });
 
         // 移除加载状态

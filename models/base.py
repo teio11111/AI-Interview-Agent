@@ -1,5 +1,5 @@
 from extensions import db
-from datetime import datetime
+from utils import beijing_now
 
 
 class BaseModel(db.Model):
@@ -7,7 +7,7 @@ class BaseModel(db.Model):
     __abstract__ = True
 
     id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
-    created_at = db.Column(db.DateTime, default=datetime.now, comment='创建时间')
+    created_at = db.Column(db.DateTime, default=beijing_now, comment='创建时间')
 
     def to_dict(self):
         raise NotImplementedError

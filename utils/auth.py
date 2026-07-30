@@ -46,7 +46,8 @@ def login_required(role=None):
                 if user.role == 'admin':
                     return redirect(url_for('home.index'))
                 else:
-                    return redirect(url_for('candidate_portal.portal_page'))
+                    # 候选人门户已下线 → 跳登录页
+                    return redirect(url_for('auth.login_page'))
             return f(*args, **kwargs)
         return decorated_function
     return decorator

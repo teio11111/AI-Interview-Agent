@@ -79,6 +79,19 @@ class TechEvaluatorAgent(BaseAgent):
 - 匹配的技能：标注熟练度（精通/熟练/了解/基础）和简历证据
 - 缺失的技能：标注重要程度（核心/重要/次要）和缺失影响
 
+**重要：语义等价匹配原则**
+简历中可能使用泛化描述而非具体技术名称，你必须做语义推理：
+- "后端微服务框架" / "微服务架构" → 对应 Spring Boot / Spring Cloud
+- "关系型数据库" / "RDBMS" → 对应 MySQL / PostgreSQL
+- "内存缓存" / "缓存中间件" → 对应 Redis / Memcached
+- "消息队列" / "MQ" → 对应 Kafka / RabbitMQ / RocketMQ
+- "持久层框架" / "ORM框架" → 对应 MyBatis / Hibernate / JPA
+- "容器化部署" → 对应 Docker / Kubernetes
+- "搜索中间件" → 对应 Elasticsearch / Solr
+- "链路追踪" → 对应 SkyWalking / Zipkin / Jaeger
+
+当简历描述与岗位要求在语义上等价时，应判定为**匹配**而非缺失，并在 evidence 中引用简历原文。
+
 ### 2. 技术深度评分（tech_depth_score，0-100 分制）
 - 90-100：核心技术全部精通，有深度项目经验
 - 75-89：核心技术基本熟练，个别技能欠缺

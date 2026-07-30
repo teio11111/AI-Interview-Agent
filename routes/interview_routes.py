@@ -1,5 +1,5 @@
 from flask import Blueprint, request, render_template
-from models.interview import InterviewSession, InterviewDialog, InterviewTopic
+from models.interview import InterviewSession, InterviewTopic
 from constants import SessionStatus
 from repositories.interview_repository import InterviewRepository
 from repositories.candidate_repository import CandidateRepository
@@ -8,7 +8,7 @@ from services.interview_service import InterviewService
 from utils.response import success, error
 from utils.logger import logger
 from utils.auth import login_required
-from utils.audit import log_operation
+from utils.audit import log_interview_created, log_interview_finished, log_operation
 import json
 
 interview_bp = Blueprint('interviews', __name__, url_prefix='/api/interviews')
@@ -40,16 +40,7 @@ def generate_questions(candidate_id):
             questions_plan=json.dumps(result, ensure_ascii=False)
         )
         InterviewRepository.save_session(session)
-        # 记录这是该候选人的第几轮面试
-        try:
-            prior_count = InterviewRepository.count_sessions_by_candidate(candidate_id)
-        except Exception:
-            prior_count = 0
-        nth = prior_count + 1  # +1 包含本次刚创建的会话
-        log_operation(
-            'create', 'interview_session', session.id, candidate.name,
-            f'第 {nth} 轮'
-        )
+        log_interview_created(session, candidate.name)
         return success({'session': session.to_dict(), 'questions': result})
     else:
         return error('生成面试问题失败', 502)
@@ -86,7 +77,19 @@ def delete_session(session_id):
 @interview_bp.route('/<int:session_id>/dialog', methods=['POST'])
 @login_required(role='admin')
 def add_dialog(session_id):
-    """提交问答并获取 AI 反馈"""
+    """提交问答并获取 AI 反馈（统一接口，支持追问与实时面试两个场景）
+
+    请求参数：
+      - question: 面试官问题
+      - answer: 候选人回答
+      - parent_seq: 追问来源问题序号（NULL/不传表示非追问）
+      - context: 实时面试场景下的对话历史（可选，仅供 LLM 参考，不入库）
+
+    返回：
+      - dialog: 保存的对话记录
+      - feedback: AI 反馈字典
+    """
+    from models.interview import InterviewDialog
     session = InterviewRepository.find_session_by_id(session_id)
     if not session:
         return error('面试会话不存在', 404)
@@ -95,7 +98,7 @@ def add_dialog(session_id):
     if not data or not data.get('question') or not data.get('answer'):
         return error('问题和回答不能为空', 400)
 
-    # 更新会话状态
+    # 更新会话状态为进行中（如果是 preparing 状态）
     if session.status == SessionStatus.PREPARING:
         session.status = SessionStatus.IN_PROGRESS
         InterviewRepository.update_session(session)
@@ -109,16 +112,35 @@ def add_dialog(session_id):
 
     # 获取候选人和岗位信息
     candidate = CandidateRepository.find_by_id(session.candidate_id)
+    if not candidate:
+        return error('候选人不存在', 404)
     position = PositionRepository.find_by_id(candidate.position_id)
+    if not position:
+        return error('关联岗位不存在', 404)
 
-    # 调用 AI 获取反馈
+    # 调用 AI 获取反馈（传入简历上下文）
     feedback = InterviewService.get_dialog_feedback(
         candidate.name, position.name,
-        candidate.resume_text,
+        candidate.resume_text or '',
         dialog_history, data['question'], data['answer']
     )
 
-    # 保存对话
+    # 校验并修正评分（实时面试场景）
+    if feedback and isinstance(feedback, dict):
+        if 'score' in feedback:
+            try:
+                score = int(feedback['score'])
+                feedback['score'] = max(1, min(10, score))
+            except (ValueError, TypeError):
+                feedback['score'] = 5
+        if 'score_breakdown' in feedback and isinstance(feedback['score_breakdown'], dict):
+            for k, v in feedback['score_breakdown'].items():
+                try:
+                    feedback['score_breakdown'][k] = max(1, min(10, int(v)))
+                except (ValueError, TypeError):
+                    feedback['score_breakdown'][k] = 5
+
+    # 保存对话（含追问标识 parent_seq）
     dialog = InterviewDialog(
         session_id=session_id,
         question=data['question'],
@@ -128,6 +150,15 @@ def add_dialog(session_id):
         parent_seq=data.get('parent_seq')
     )
     InterviewRepository.save_dialog(dialog)
+
+    # LLM 全部失败时返回兑底反馈，不报 502（前端实时面试需要降级可用）
+    if not feedback:
+        feedback = {
+            'score': 5,
+            'answer_quality': '待评估',
+            'evaluation': 'AI 分析暂时不可用，请稍后重试。',
+            'follow_up_questions': []
+        }
 
     return success({'dialog': dialog.to_dict(), 'feedback': feedback})
 
@@ -207,10 +238,7 @@ def finish_interview(session_id):
             report['topics'] = [t.to_dict() for t in saved_topics]
         session.report = json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else report
         InterviewRepository.update_session(session)
-        log_operation(
-            'finish_interview', 'interview_session', session_id, candidate.name,
-            f'板块 {len(saved_topics)} 个, 对话 {len(dialogs)} 轮'
-        )
+        log_interview_finished(session, candidate.name, len(saved_topics), len(dialogs))
         return success({'report': report})
     else:
         return error('生成评价报告失败', 502)
@@ -249,43 +277,6 @@ def list_session_topics(session_id):
     })
 
 
-@interview_bp.route('/<int:session_id>/follow-up', methods=['POST'])
-@login_required(role='admin')
-def generate_follow_up(session_id):
-    """生成连续追问"""
-    session = InterviewRepository.find_session_by_id(session_id)
-    if not session:
-        return error('面试会话不存在', 404)
-
-    data = request.get_json()
-    dialog_seq = data.get('dialog_seq')  # 要追问的对话序号
-    if dialog_seq is None:
-        return error('请指定要追问的对话', 400)
-
-    # 获取该问题及之后的所有对话（构建对话链）
-    dialogs = InterviewRepository.find_dialogs_by_session(session_id)
-    # 构建对话链：从指定问题开始的所有 Q&A
-    chain_dialogs = [d for d in dialogs if d.seq >= dialog_seq]
-    dialog_chain = '\n'.join([
-        f"Q{d.seq}: {d.question}\nA{d.seq}: {d.answer}"
-        for d in chain_dialogs
-    ])
-
-    if not dialog_chain:
-        return error('未找到对话记录', 404)
-
-    candidate = CandidateRepository.find_by_id(session.candidate_id)
-
-    result = InterviewService.generate_follow_up(
-        candidate.resume_text, dialog_chain
-    )
-
-    if result:
-        return success(result)
-    else:
-        return error('追问生成失败', 502)
-
-
 @interview_bp.route('/sessions', methods=['GET'])
 @login_required(role='admin')
 def list_sessions():
@@ -301,93 +292,6 @@ home_bp = Blueprint('home', __name__)
 @login_required(role='admin')
 def index():
     return render_template('index.html')
-
-@interview_bp.route('/dialog/evaluate', methods=['POST'])
-@login_required(role='admin')
-def evaluate_dialog():
-    """实时评估候选人回答（接入真实AI Agent，同时保存对话到数据库）"""
-    data = request.get_json()
-    if not data or not data.get('answer'):
-        return error('回答内容不能为空', 400)
-    
-    session_id = data.get('session_id')
-    answer = data['answer']
-    question = data.get('question', '')
-    context = data.get('context', [])
-    
-    # 获取会话信息
-    if not session_id:
-        return error('缺少session_id', 400)
-    
-    session = InterviewRepository.find_session_by_id(session_id)
-    if not session:
-        return error('面试会话不存在', 404)
-    
-    # 更新会话状态为进行中（如果是 preparing 状态）
-    from constants import SessionStatus
-    if session.status == SessionStatus.PREPARING:
-        session.status = SessionStatus.IN_PROGRESS
-        InterviewRepository.update_session(session)
-    
-    candidate = CandidateRepository.find_by_id(session.candidate_id)
-    position = PositionRepository.find_by_id(candidate.position_id)
-    
-    # 获取历史对话文本
-    existing_dialogs = InterviewRepository.find_dialogs_by_session(session_id)
-    dialog_history = '\n'.join([
-        f"Q{d.seq}: {d.question}\nA{d.seq}: {d.answer}"
-        for d in existing_dialogs
-    ])
-    
-    # 调用真实AI Agent评估
-    feedback = InterviewService.get_dialog_feedback(
-        candidate.name, position.name,
-        candidate.resume_text or '',
-        dialog_history, question, answer
-    )
-    
-    # 校验并修正评分（确保在1-10范围内）
-    if feedback and isinstance(feedback, dict):
-        if 'score' in feedback:
-            try:
-                score = int(feedback['score'])
-                feedback['score'] = max(1, min(10, score))
-            except (ValueError, TypeError):
-                feedback['score'] = 5
-        # 校验五维评分
-        if 'score_breakdown' in feedback and isinstance(feedback['score_breakdown'], dict):
-            for k, v in feedback['score_breakdown'].items():
-                try:
-                    feedback['score_breakdown'][k] = max(1, min(10, int(v)))
-                except (ValueError, TypeError):
-                    feedback['score_breakdown'][k] = 5
-    
-    # 保存对话记录到数据库
-    try:
-        dialog = InterviewDialog(
-            session_id=session_id,
-            question=question or '(未指定问题)',
-            answer=answer,
-            ai_feedback=json.dumps(feedback, ensure_ascii=False) if feedback else None,
-            seq=len(existing_dialogs) + 1
-        )
-        InterviewRepository.save_dialog(dialog)
-    except Exception as e:
-        logger.error(f'保存对话失败: {e}')
-    
-    if feedback:
-        return success({'feedback': feedback})
-    else:
-        # AI 分析失败，返回简化结果
-        return success({
-            'feedback': {
-                'score': 5,
-                'answer_quality': '待评估',
-                'evaluation': 'AI 分析暂时不可用，请稍后重试。',
-                'follow_up_questions': []
-            }
-        })
-
 
 @home_bp.route('/positions')
 @login_required(role='admin')

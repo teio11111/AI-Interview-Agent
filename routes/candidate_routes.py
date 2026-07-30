@@ -12,7 +12,7 @@ from utils.pdf_parser import extract_text_from_pdf
 from utils.response import success, error, created
 from utils.logger import logger
 from utils.auth import login_required
-from utils.audit import log_operation
+from utils.audit import log_interview_created, log_operation
 from utils.meta_evaluation_pdf import generate_meta_evaluation_pdf
 import json
 import threading
@@ -53,6 +53,7 @@ def create_candidate():
         resume_text=data.get('resume_text', '')
     )
     CandidateRepository.save(candidate)
+    log_operation('create', 'candidate', candidate.id, candidate.name)
     return created(candidate.to_dict())
 
 
@@ -163,6 +164,8 @@ def analyze_candidate(id):
             f'session={session.id}, thread.is_alive={thread.is_alive()}'
         )
     InterviewRepository.save_session(session)
+    log_interview_created(session, candidate.name)
+    log_operation('analyze', 'candidate', candidate.id, candidate.name)
     logger.info(f'[v3.6.5] 面试会话已创建: candidate={candidate.name}, session={session.id}')
 
     return success({'analysis': result, 'candidate': candidate.to_dict(), 'session': session.to_dict()})
@@ -240,6 +243,7 @@ def delete_candidate(id):
     
     name = candidate.name
     CandidateRepository.delete(candidate)
+    log_operation('delete', 'candidate', id, name)
     return success({'id': id})
 
 
@@ -270,6 +274,7 @@ def batch_delete():
     for cid in ids:
         candidate = CandidateRepository.find_by_id(cid)
         if candidate:
+            log_operation('delete', 'candidate', candidate.id, candidate.name)
             CandidateRepository.delete(candidate)
             deleted.append(cid)
     return success({'deleted': deleted, 'count': len(deleted)})
@@ -341,6 +346,8 @@ def meta_evaluate(id):
     candidate.meta_evaluation = json.dumps(result, ensure_ascii=False)
     candidate.meta_eval_round_count = len(interview_data)
     CandidateRepository.update(candidate)
+    log_operation('meta_evaluate', 'candidate', candidate.id, candidate.name,
+                  f'{len(interview_data)} 轮面试')
 
     return success({'evaluation': result, 'candidate_id': id})
 

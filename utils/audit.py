@@ -45,3 +45,51 @@ def log_operation(action, target_type=None, target_id=None, target_name=None, de
     except Exception as e:
         db.session.rollback()
         logger.warning(f'[审计日志] 写入失败: {e}')
+
+
+def _has_interview_log(action, session_id):
+    """判断指定面试操作是否已记录，避免 SSE 重连或重复提交产生重复日志。"""
+    from models.operation_log import OperationLog
+
+    return OperationLog.query.filter_by(
+        action=action,
+        target_type='interview_session',
+        target_id=session_id
+    ).first() is not None
+
+
+def log_interview_created(interview_session, candidate_name):
+    """记录面试会话创建，并按候选人的会话时间顺序计算轮次。"""
+    if _has_interview_log('create', interview_session.id):
+        return False
+
+    from models.interview import InterviewSession
+    from sqlalchemy import and_, or_
+
+    round_number = InterviewSession.query.filter(
+        InterviewSession.candidate_id == interview_session.candidate_id,
+        or_(
+            InterviewSession.created_at < interview_session.created_at,
+            and_(
+                InterviewSession.created_at == interview_session.created_at,
+                InterviewSession.id <= interview_session.id
+            )
+        )
+    ).count()
+    log_operation(
+        'create', 'interview_session', interview_session.id, candidate_name,
+        f'第 {max(round_number, 1)} 轮'
+    )
+    return True
+
+
+def log_interview_finished(interview_session, candidate_name, topic_count, dialog_count):
+    """记录面试结束；同一会话只记录一次。"""
+    if _has_interview_log('finish_interview', interview_session.id):
+        return False
+
+    log_operation(
+        'finish_interview', 'interview_session', interview_session.id, candidate_name,
+        f'板块 {topic_count} 个, 对话 {dialog_count} 轮'
+    )
+    return True

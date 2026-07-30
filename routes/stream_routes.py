@@ -8,6 +8,7 @@ from constants import SessionStatus
 from services.interview_service import InterviewService
 from utils.response import error
 from utils.auth import login_required
+from utils.audit import log_interview_created, log_interview_finished
 from utils.logger import logger
 import json
 import queue
@@ -373,9 +374,14 @@ def stream_candidate_analysis(candidate_id):
         if result_holder['error']:
             yield _sse_event('error', {'message': result_holder['error']})
         elif result_holder['resume']:
+            session_dict = result_holder.get('session_dict')
+            if session_dict:
+                created_session = InterviewRepository.find_session_by_id(session_dict.get('id'))
+                if created_session:
+                    log_interview_created(created_session, candidate.name)
             yield _sse_event('complete', {
                 'result': result_holder['resume'],
-                'session': result_holder.get('session_dict'),
+                'session': session_dict,
             })
         else:
             yield _sse_event('error', {'message': '候选人分析失败'})
@@ -464,6 +470,7 @@ def stream_question_generation(candidate_id):
                         questions_plan=json.dumps(result_holder['result'], ensure_ascii=False)
                     )
                     InterviewRepository.save_session(session)
+                    log_interview_created(session, candidate.name)
                 yield _sse_event('complete', {'result': result_holder['result'], 'session': session.to_dict()})
             except Exception as e:
                 yield _sse_event('error', {'message': f'出题成功但会话创建失败: {e}'})
@@ -666,6 +673,10 @@ def stream_report_generation(session_id):
                 sess = InterviewRepository.find_session_by_id(session_id)
                 sess.report = json.dumps(result_holder['result'], ensure_ascii=False) if isinstance(result_holder['result'], dict) else result_holder['result']
                 InterviewRepository.update_session(sess)
+                log_interview_finished(
+                    sess, candidate.name,
+                    len(result_holder.get('topics') or []), len(dialogs)
+                )
             except Exception as e:
                 logger.error(f'报告保存失败: {e}')
             yield _sse_event('complete', {
