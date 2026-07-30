@@ -140,12 +140,26 @@ class ASRSession:
         """
         if self.ws and self.is_running and self.connected:
             try:
+                # 诊断：每20次检查一次音频数据质量
+                if not hasattr(self, '_send_count'):
+                    self._send_count = 0
+                self._send_count += 1
+                if self._send_count % 20 == 1:
+                    import struct
+                    if len(audio_data) >= 200:
+                        samples = struct.unpack(f'<{len(audio_data)//2}h', audio_data)
+                        max_val = max(abs(s) for s in samples)
+                        non_zero = sum(1 for s in samples if s != 0)
+                        logger.info(f"[ASR-DIAG] 音频质量: len={len(audio_data)}, max={max_val}, non_zero={non_zero}/{len(samples)}")
+                
                 # 讯飞要求每次发送不超过1280字节，需要分片
                 chunk_size = 1280
                 for i in range(0, len(audio_data), chunk_size):
                     chunk = audio_data[i:i + chunk_size]
                     self.ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
-                    # 讯飞建议每帧之间间隔40ms，但实际测试中可以连续发送
+                    # 讯飞建议每帧间间隔40ms，避免数据堆积导致识别错误
+                    import time as _time
+                    _time.sleep(0.04)
                 logger.debug(f"[ASR] 发送音频: {len(audio_data)} bytes ({(len(audio_data) + chunk_size - 1) // chunk_size} chunks)")
             except Exception as e:
                 logger.error(f"[ASR] 发送音频失败: {e}")
@@ -171,13 +185,15 @@ class ASRSession:
     
     def _on_message(self, ws, message):
         """处理讯飞识别结果
-        
+
         讯飞返回格式:
         {
             "action": "result",
             "data": "{\"cn\":{\"st\":{\"rt\":[{\"ws\":[{\"cw\":[{\"w\":\"字\"}]}],\"rl\":\"0\"}]}}}"
         }
         """
+        # 详细日志：记录讯飞所有原始消息
+        logger.info(f"[ASR-MSGRX] raw={message[:500]}")
         try:
             msg = json.loads(message)
             action = msg.get('action', '')
@@ -271,8 +287,22 @@ class ASRSession:
     
     def _on_close(self, ws, close_status_code, close_msg):
         logger.info(f"[ASR] 讯飞WebSocket已关闭 (code={close_status_code}, msg={close_msg})")
-        self.is_running = False
         self.connected = False
+        
+        # 如果是意外断开（非主动停止），尝试自动重连
+        if self.is_running and close_status_code in [1000, None]:
+            logger.info(f"[ASR] 检测到意外断开，3秒后尝试自动重连...")
+            import time
+            time.sleep(3)
+            if self.is_running:  # 再次确认还在运行
+                try:
+                    self._connect()
+                    logger.info(f"[ASR] 自动重连成功")
+                except Exception as e:
+                    logger.error(f"[ASR] 自动重连失败: {e}")
+                    self.is_running = False
+        else:
+            self.is_running = False
     
     def get_results(self):
         """获取所有识别结果"""

@@ -875,7 +875,13 @@ async function startASR() {
         
         // 第三步：创建音频上下文
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        
+
+        // 确保 AudioContext 处于运行状态（云端浏览器可能 suspended）
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+        console.log(`[Audio] AudioContext sampleRate=${audioContext.sampleRate}Hz, state=${audioContext.state}`);
+
         // 第四步：混合音频流
         let finalStream;
         
@@ -931,10 +937,18 @@ async function startASR() {
             document.getElementById('currentSpeaker').textContent = '识别中...';
             document.getElementById('currentSpeaker').className = 'fw-bold text-info';
             
+            let _chunkCount = 0;
             audioProcessor.onaudioprocess = (e) => {
                 if (!isRecording) return;
-                const pcmData = floatTo16BitPCM(e.inputBuffer.getChannelData(0));
+                const channelData = e.inputBuffer.getChannelData(0);
+                const pcmData = floatTo16BitPCM(channelData);
                 sendAudioChunk(pcmData, asrSessionId);
+                // 每50个chunk（约12秒）报告一次音频数据状态
+                if (++_chunkCount % 50 === 1) {
+                    let max = 0;
+                    for (let i = 0; i < channelData.length; i++) { const v = Math.abs(channelData[i]); if (v > max) max = v; }
+                    console.log(`[Audio] chunk#${_chunkCount} max=${max.toFixed(4)} rate=${audioContext.sampleRate}Hz`);
+                }
             };
             
             // 显示当前模式
