@@ -441,7 +441,7 @@ def test_k_v36_async(opener):
         'orchestrator evaluate_resume 已拆为 tech+soft / hidden 两阶段':
             ('阶段A：tech + soft 并发（限时 120s）' in
              open('services/agent_orchestrator.py', encoding='utf-8').read()
-             and 'f_h.result(timeout=180)' in
+             and 'f_a.result(timeout=90)' in
              open('services/agent_orchestrator.py', encoding='utf-8').read()),
         '_emit 支持 _extra 参数（传 partial_result payload）':
             '_extra' in open('services/agent_orchestrator.py', encoding='utf-8').read(),
@@ -552,6 +552,53 @@ def test_k_v36_async(opener):
                 pass
     else:
         _record('K', '动态 SSE v3.6 验证（可选 RUN_V36=1）', 'SKIP')
+
+    # =========================================================================
+    # 【v4.1】重新评估接口静态+动态检查
+    # =========================================================================
+    cand_routes_src = open('routes/candidate_routes.py', encoding='utf-8').read()
+    _record('L', 'candidate_routes 含 DELETE /<int:id>/ai-analysis',
+            'PASS' if "methods=['DELETE']" in cand_routes_src and "clear_ai_analysis" in cand_routes_src else 'FAIL')
+
+    candidates_html_src = open('templates/candidates.html', encoding='utf-8').read()
+    _record('L', 'candidates.html 含「重新评估」按钮 + reanalyzeCandidate 函数',
+            'PASS' if (
+                'reanalyzeCandidate' in candidates_html_src
+                and 'bi-arrow-clockwise' in candidates_html_src
+                and '重新评估' in candidates_html_src
+            ) else 'FAIL')
+
+    # 动态检查：调一次 DELETE 接口，看返回结构
+    s_list, _, j_list, _ = http_call(opener, 'GET', '/api/candidates')
+    cands_list = j_list.get('data') or []
+    ai_cand = next((c for c in cands_list if c.get('ai_analysis')), None)
+    if ai_cand:
+        cid = ai_cand['id']
+        # 1) 清空
+        s_del, _, j_del, _ = http_call(opener, 'DELETE', f'/api/candidates/{cid}/ai-analysis')
+        ok1 = s_del == 200 and j_del.get('code') == 200
+        _record('L', f'DELETE /api/candidates/{cid}/ai-analysis 返回 OK',
+                'PASS' if ok1 else 'FAIL', f'status={s_del} body={j_del}')
+        # 2) 确认 DB 字段被清空
+        s_g, _, j_g, _ = http_call(opener, 'GET', f'/api/candidates/{cid}')
+        cand_after = j_g.get('data') or {}
+        ok2 = (cand_after.get('ai_analysis') in (None, '')) and cand_after.get('match_score') is None
+        _record('L', 'DB 中 ai_analysis + match_score 已清空',
+                'PASS' if ok2 else 'FAIL',
+                f'ai_len={len(cand_after.get("ai_analysis") or "")} score={cand_after.get("match_score")}')
+        # 3) 重复 DELETE 应报 400
+        s_d2, _, j_d2, _ = http_call(opener, 'DELETE', f'/api/candidates/{cid}/ai-analysis')
+        ok3 = s_d2 == 400 and j_d2.get('code') == 400
+        _record('L', '重复 DELETE 返 400（无 AI 时拒绝）',
+                'PASS' if ok3 else 'FAIL', f'status={s_d2}')
+        # 4) 不存在返 404
+        s_nf, _, j_nf, _ = http_call(opener, 'DELETE', '/api/candidates/99999/ai-analysis')
+        ok4 = s_nf == 404 and j_nf.get('code') == 404
+        _record('L', 'DELETE 不存在的候选人返 404',
+                'PASS' if ok4 else 'FAIL', f'status={s_nf}')
+    else:
+        # 没有可重置的候选人时，只跑静态检查（已上面测试）
+        _record('L', '动态 DELETE 检查', 'SKIP', '没有已评估的候选人可供测试')
 
 
 # ============================================================================

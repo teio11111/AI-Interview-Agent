@@ -75,6 +75,29 @@ def upload_resume():
         return error('PDF 解析失败，请手动粘贴简历内容', 400)
 
 
+@candidate_bp.route('/<int:id>/ai-analysis', methods=['DELETE'])
+@login_required(role='admin')
+def clear_ai_analysis(id):
+    """【v4.1】清除候选人的 AI 分析结果（用于重新评估）
+
+    背景：v4.1 优化后重跑 LLM 可能输出不同评分，用户需要「重新评估」入口。
+    修复：清除 ai_analysis + match_score，保留 interview sessions（老会话不被误删）。
+    前端调用后需要再触发一次 SSE /api/stream/candidate-analysis/{id} 重新评估。
+    """
+    candidate = CandidateRepository.find_by_id(id)
+    if not candidate:
+        return error('候选人不存在', 404)
+    if not candidate.ai_analysis:
+        return error('该候选人尚无 AI 分析结果，无需清除', 400)
+
+    candidate.ai_analysis = ''
+    candidate.match_score = None
+    CandidateRepository.update(candidate)
+    log_operation('clear_ai_analysis', 'candidate', candidate.id, candidate.name)
+    logger.info(f'[v4.1] 清除 AI 分析结果: candidate={candidate.name} (id={id})')
+    return success({'cleared': True, 'candidate_id': id})
+
+
 @candidate_bp.route('/<int:id>/analyze', methods=['POST'])
 @login_required(role='admin')
 def analyze_candidate(id):

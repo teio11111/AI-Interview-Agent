@@ -354,7 +354,8 @@ function renderCandidates() {
                                 ? `<span class="badge bg-${c.match_score >= 70 ? 'success' : c.match_score >= 50 ? 'warning' : 'danger'} score-badge" style="font-size:0.9rem;">${c.match_score}分</span>`
                                 : '<span class="text-muted">-</span>';
                             const aiBtn = c.ai_analysis
-                                ? `<button class="btn btn-sm btn-outline-primary" onclick="viewAnalysis(${c.id})"><i class="bi bi-eye"></i> 查看</button>`
+                                ? `<button class="btn btn-sm btn-outline-primary" onclick="viewAnalysis(${c.id})"><i class="bi bi-eye"></i> 查看</button>` +
+                                  `<button class="btn btn-sm btn-outline-warning ms-1" onclick="reanalyzeCandidate(${c.id}, this)" title="重新评估（清除旧结果后重跑 LLM）"><i class="bi bi-arrow-clockwise"></i></button>`
                                 : `<button class="btn btn-sm btn-outline-secondary" onclick="analyzeCandidate(${c.id}, this)"><i class="bi bi-robot"></i> AI分析</button>`;
                             const checked = selectedSet.has(c.id) ? 'checked' : '';
                             // 面试状态
@@ -514,6 +515,24 @@ const _aiEvalJob = {
     phase: 'idle',        // idle | phase1 | phase2 | done
     session: null,        // 最终阶段会话
 };
+// 【v4.1】重新评估：先清除旧 AI 分析，再触发 SSE 重跑
+async function reanalyzeCandidate(id, btn) {
+    const cand = candidatesCache.find(c => c.id === id);
+    if (!cand) return;
+    if (!confirm(`确定要重新评估「${cand.name}」吗？\n\n旧的分析结果将被清除，AI 会重新跑一遍（约 60-90 秒）。`)) return;
+
+    btn.disabled = true;
+    const res = await apiCall(`/api/candidates/${id}/ai-analysis`, 'DELETE');
+    if (!res || res.code !== 200) {
+        showToast(res?.message || '清除失败', 'danger');
+        btn.disabled = false;
+        return;
+    }
+    cand.ai_analysis = '';  // 更新本地缓存
+    showToast(`已清除旧分析，正在重新评估「${cand.name}」...`, 'info');
+    analyzeCandidate(id, btn);
+}
+
 async function analyzeCandidate(id, btn) {
     const cand = candidatesCache.find(c => c.id === id);
     if (!cand) return;
