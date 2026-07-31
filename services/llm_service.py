@@ -2,8 +2,43 @@ import requests
 import json
 import re
 import time
+import random
+import hashlib
 from flask import current_app
 from utils.logger import logger
+from constants import LLM_CACHE_TTL, LLM_CACHE_MAX
+
+
+# 【v4.1】LLM 调用结果缓存（5 分钟 TTL）
+# 背景：演示时重复点击同候选人，重跑 LLM 浪费 1-3 分钟
+# 修复：相同 prompt 5 分钟内复用上次结果，<0.1s 返回
+# 【v4.1 演示前】TTL/MAX 抽到 constants.py 便于跨模块共享
+_LLM_CACHE = {}  # {hash: (content, timestamp)}
+
+
+def _get_llm_cache_key(system_prompt, user_prompt):
+    h = hashlib.md5((system_prompt + '|' + user_prompt).encode('utf-8')).hexdigest()
+    return h
+
+
+def _get_cached_llm(key):
+    if key in _LLM_CACHE:
+        content, ts = _LLM_CACHE[key]
+        if time.time() - ts < LLM_CACHE_TTL:
+            logger.info(f'[LLM-CACHE] hit (age={time.time()-ts:.1f}s)')
+            return content
+        else:
+            del _LLM_CACHE[key]
+    return None
+
+
+def _set_cached_llm(key, content):
+    if len(_LLM_CACHE) >= LLM_CACHE_MAX:
+        # 简单 LRU：删最老的 50 条
+        oldest = sorted(_LLM_CACHE.items(), key=lambda x: x[1][1])[:50]
+        for k, _ in oldest:
+            del _LLM_CACHE[k]
+    _LLM_CACHE[key] = (content, time.time())
 
 
 class LlmService:
@@ -26,6 +61,12 @@ class LlmService:
         Returns:
             str: LLM 返回的文本内容，失败返回 None
         """
+        # 【v4.1】缓存检查：同 prompt 5 分钟内直接返回
+        _cache_key = _get_llm_cache_key(system_prompt, user_prompt)
+        _cached = _get_cached_llm(_cache_key)
+        if _cached is not None:
+            return _cached
+
         api_url = current_app.config['LLM_API_URL']
         api_key = current_app.config['LLM_API_KEY']
         model = current_app.config['LLM_MODEL']
@@ -58,6 +99,8 @@ class LlmService:
                 if content and content.strip():
                     elapsed = round(time.time() - t0, 1)
                     logger.info(f'[LLM] 成功 attempt {attempt}, 返回 {len(content)} 字符, 耗时 {elapsed}s')
+                    # 【v4.1】写缓存
+                    _set_cached_llm(_cache_key, content)
                     return content
                 last_error = '空内容'
                 logger.warning(f'[LLM] attempt {attempt} 返回空内容')
@@ -77,7 +120,8 @@ class LlmService:
                     backoff = 3 if attempt == 1 else (10 if attempt == 2 else 30)
                 else:
                     backoff = 2 ** attempt
-                logger.info(f'[LLM] {backoff}s 后重试...')
+                backoff += random.uniform(0, 1)  # 防 thundering herd
+                logger.info(f'[LLM] {backoff:.1f}s 后重试...')
                 time.sleep(backoff)
 
         logger.error(f'[LLM] 全部 {max_retries} 次尝试均失败: {last_error}')

@@ -9,6 +9,9 @@ from agents.position_analyst import PositionAnalystAgent
 from agents.tech_evaluator import TechEvaluatorAgent
 from agents.soft_evaluator import SoftEvaluatorAgent
 from agents.hidden_evaluator import HiddenEvaluatorAgent
+# 【v4.1】隐性因素拆分并发
+from agents.hidden_sub_a import HiddenSubAEvaluatorAgent
+from agents.hidden_sub_b import HiddenSubBEvaluatorAgent
 from agents.resume_coordinator import ResumeCoordinatorAgent
 
 # 出题（3个出题官 + 1个选题官）
@@ -41,6 +44,8 @@ __all__ = [
     'TechEvaluatorAgent',
     'SoftEvaluatorAgent',
     'HiddenEvaluatorAgent',
+    'HiddenSubAEvaluatorAgent',
+    'HiddenSubBEvaluatorAgent',
     'ResumeCoordinatorAgent',
     # 出题
     'ProjectQuestionerAgent',

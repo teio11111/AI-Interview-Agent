@@ -280,36 +280,50 @@ def stream_candidate_analysis(candidate_id):
                            'message': '兜底面试题已生成',
                            'percent': 95})
 
-                    # 【v3.6.5 同步保险】同步调用 LLM 真出题，覆盖兜底题。
-                    # waitess 8 worker 下 daemon thread 时灵时不灵，状态可能卡在兜底题。
-                    # 此处 SSE_TIMEOUT=320s 充中， LLM 出题≈60-90s 可安全同步等。
-                    try:
-                        q.put({'event': 'progress', 'stage': '精修出题',
-                               'agent': 'AI 调度员',
-                               'message': 'AI 正在精修题目，让问题贴合候选人简历…',
-                               'percent': 97})
-                        refined = InterviewService.generate_questions(
-                            pos, cand, pos.ai_analysis, cand.ai_analysis,
-                            cand.resume_text,
-                        )
-                        if refined and isinstance(refined, dict) and refined.get('questions'):
-                            sess.questions_plan = json.dumps(refined, ensure_ascii=False)
-                            InterviewRepository.update_session(sess)
-                            result_holder['session_dict'] = sess.to_dict()
-                            result_holder['completed_at_step'] = 'refined_session_updated'
-                            logger.info(
-                                f'[v3.6.5 SSE] LLM 精修出题成功: candidate={cand.name}, '
-                                f'session={sess.id}, questions={len(refined["questions"])}'
-                            )
-                        else:
-                            logger.warning(
-                                f'[v3.6.5 SSE] LLM 精修返回为空,保留兑底题: '
-                                f'candidate={cand.name}, session={sess.id}'
-                            )
-                    except Exception as e:
-                        logger.error(
-                            f'[v3.6.5 SSE] LLM 精修异常: candidate={cand.name}, error={e}'
-                        )
+                    # 【v4.1 性能修复】LLM 精修出题改为 daemon thread 异步执行
+                    # v3.6.5 改同步导致总耗时从 ~68s 暴增到 ~170s（违反 60s SLA）
+                    # 修复：先用兑底题立即返回 SSE complete，精修出题在后台异步完成
+                    # 前端拿到兑底题即可开始面试，精修完成后 DB 自动覆盖
+                    _sess_id = sess.id
+                    _cand_id = cand.id
+                    _pos_id = pos.id
+                    _cand_name = cand.name
+
+                    def _refine_worker():
+                        """后台异步精修出题：独立 app_context，独立 DB 会话"""
+                        with app.app_context():
+                            try:
+                                from services.interview_service import InterviewService as _IS
+                                from repositories.candidate_repository import CandidateRepository as _CR
+                                from repositories.position_repository import PositionRepository as _PR
+                                _cand = _CR.find_by_id(_cand_id)
+                                _pos = _PR.find_by_id(_pos_id)
+                                _sess = InterviewRepository.find_session_by_id(_sess_id)
+                                if not _cand or not _pos or not _sess:
+                                    logger.warning(f'[v4.1 精修] 对象不存在: cand={_cand_id} pos={_pos_id} sess={_sess_id}')
+                                    return
+                                refined = _IS.generate_questions(
+                                    _pos, _cand, _pos.ai_analysis, _cand.ai_analysis,
+                                    _cand.resume_text,
+                                )
+                                if refined and isinstance(refined, dict) and refined.get('questions'):
+                                    _sess.questions_plan = json.dumps(refined, ensure_ascii=False)
+                                    InterviewRepository.update_session(_sess)
+                                    logger.info(
+                                        f'[v4.1 精修] LLM 出题成功: candidate={_cand_name}, '
+                                        f'session={_sess.id}, questions={len(refined["questions"])}'
+                                    )
+                                else:
+                                    logger.warning(
+                                        f'[v4.1 精修] LLM 返回为空,保留兑底题: '
+                                        f'candidate={_cand_name}, session={_sess.id}'
+                                    )
+                            except Exception as _e:
+                                logger.error(f'[v4.1 精修] LLM 精修异常: candidate={_cand_name}, error={_e}')
+
+                    _refine_thread = threading.Thread(target=_refine_worker, daemon=True)
+                    _refine_thread.start()
+                    logger.info(f'[v4.1] 精修出题已提交后台线程: candidate={_cand_name}, session={_sess_id}')
                 except Exception as e:
                     result_holder['error'] = str(e)
                 finally:
@@ -318,6 +332,8 @@ def stream_candidate_analysis(candidate_id):
         t = threading.Thread(target=worker, daemon=True)
         t.start()
         start_time = time.time()
+        # 【v4.1 演示前】隐性阶段 30s 没业务事件时，每 5s yield 一次 progress 让前端进度条跳动
+        _last_idle_progress = start_time
 
         while True:
             # 超时控制：超过 120s 强制 yield error
@@ -370,6 +386,15 @@ def stream_candidate_analysis(candidate_id):
                     yield _sse_event('progress', event)
             except queue.Empty:
                 yield f": keepalive\n\n"
+                # 【v4.1 演示前】隐性维度 30s 等待期间每 5s yield 一次 progress 事件
+                if time.time() - _last_idle_progress > 5:
+                    _last_idle_progress = time.time()
+                    yield _sse_event('progress', {
+                        'agent': 'AI 调度员',
+                        'stage': '简历评估',
+                        'message': 'AI 隐性维度深度分析中（最长 30 秒）...',
+                        'percent': 72,
+                    })
 
         if result_holder['error']:
             yield _sse_event('error', {'message': result_holder['error']})

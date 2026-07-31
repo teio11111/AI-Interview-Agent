@@ -9,6 +9,8 @@ from agents import (
     TechEvaluatorAgent,
     SoftEvaluatorAgent,
     HiddenEvaluatorAgent,
+    HiddenSubAEvaluatorAgent,  # 【v4.1】拆分并发
+    HiddenSubBEvaluatorAgent,  # 【v4.1】拆分并发
     ResumeCoordinatorAgent,
     ProjectQuestionerAgent,
     SkillQuestionerAgent,
@@ -64,6 +66,9 @@ class AgentOrchestrator:
         self.tech_evaluator = TechEvaluatorAgent()
         self.soft_evaluator = SoftEvaluatorAgent()
         self.hidden_evaluator = HiddenEvaluatorAgent()
+        # 【v4.1】拆分并发：原 5803 字符 prompt 拆 2 个子任务
+        self.hidden_sub_a = HiddenSubAEvaluatorAgent()
+        self.hidden_sub_b = HiddenSubBEvaluatorAgent()
         self.resume_coordinator = ResumeCoordinatorAgent()
         
         # 出题（3出题官 + 1选题官）
@@ -115,7 +120,7 @@ class AgentOrchestrator:
             except Exception:
                 pass
 
-    def _run_parallel(self, agents_map, common_args, on_progress, stage, max_workers=2):
+    def _run_parallel(self, agents_map, common_args, on_progress, stage, max_workers=3):
         """通用并行执行器：并行调用多个 Agent，收集结果
 
         【v3.0 重要修复】默认 max_workers=2（从 3 调低）
@@ -185,6 +190,84 @@ class AgentOrchestrator:
 
         return results
 
+    def _merge_hidden_results(self, sub_a_r, sub_b_r):
+        """【v4.1】合并 hidden_sub_a + hidden_sub_b 结果到原 hidden_evaluator 格式
+
+        sub_a_r: {candidate_profile: {education, residence, career_direction}, implicit_requirement_mapping: [...]}
+        sub_b_r: {candidate_profile: {job_stability, emotional_stability, communication_ability, teamwork_style, learning_ability, resume_authenticity}, hidden_score_breakdown, hidden_risks, hidden_highlights, hidden_summary}
+
+        Returns:
+            dict: 与原 hidden_evaluator.evaluate() 输出一致（包含 hidden_score 系统计算、_expert_details 标记）
+        """
+        if not sub_a_r and not sub_b_r:
+            return None
+
+        merged = {}
+
+        # 1. candidate_profile：sub_a 取前 3 个，sub_b 取后 6 个
+        merged_profile = {}
+        if isinstance(sub_a_r, dict):
+            a_profile = (sub_a_r.get('candidate_profile') or {})
+            for k in ('education', 'residence', 'career_direction'):
+                if k in a_profile:
+                    merged_profile[k] = a_profile[k]
+        if isinstance(sub_b_r, dict):
+            b_profile = (sub_b_r.get('candidate_profile') or {})
+            for k in ('job_stability', 'emotional_stability', 'communication_ability',
+                      'teamwork_style', 'learning_ability', 'resume_authenticity'):
+                if k in b_profile:
+                    merged_profile[k] = b_profile[k]
+        merged['candidate_profile'] = merged_profile
+
+        # 2. implicit_requirement_mapping：仅 sub_a 有
+        if isinstance(sub_a_r, dict) and sub_a_r.get('implicit_requirement_mapping'):
+            merged['implicit_requirement_mapping'] = sub_a_r['implicit_requirement_mapping']
+
+        # 3. hidden_score_breakdown：sub_b 为主，sub_a 的 3 个维度优先
+        breakdown = {}
+        if isinstance(sub_b_r, dict):
+            breakdown.update(sub_b_r.get('hidden_score_breakdown') or {})
+        # 用 sub_a 里的 score 字段（如果有）覆盖
+        if isinstance(sub_a_r, dict):
+            a_profile = (sub_a_r.get('candidate_profile') or {})
+            for dim in ('education', 'residence', 'career_direction'):
+                if dim in a_profile and isinstance(a_profile[dim], dict):
+                    score = a_profile[dim].get('score')
+                    if isinstance(score, (int, float)) and 1 <= score <= 10:
+                        breakdown[dim] = int(score)
+        # 补齐缺失维度为 5（中性分）
+        for dim in ('education', 'residence', 'career_direction', 'job_stability',
+                    'emotional_stability', 'communication_ability', 'teamwork_style',
+                    'learning_ability', 'resume_authenticity'):
+            breakdown.setdefault(dim, 5)
+        merged['hidden_score_breakdown'] = breakdown
+
+        # 4. risks / highlights / summary：仅 sub_b 有
+        if isinstance(sub_b_r, dict):
+            for k in ('hidden_risks', 'hidden_highlights', 'hidden_summary'):
+                if k in sub_b_r:
+                    merged[k] = sub_b_r[k]
+
+        # 5. 系统计算 hidden_score（调用原 hidden_evaluator 的 _compute_hidden_score 逻辑）
+        KEYS = (
+            'education', 'residence', 'career_direction', 'job_stability',
+            'emotional_stability', 'communication_ability', 'teamwork_style',
+            'learning_ability', 'resume_authenticity',
+        )
+        values = [breakdown.get(k, 5) for k in KEYS]
+        provided_vals = [v for k, v in zip(KEYS, values) if isinstance(breakdown.get(k), (int, float)) and 1 <= breakdown[k] <= 10]
+        if provided_vals:
+            score_10 = sum(provided_vals) / len(provided_vals)
+            if score_10 <= 2.5:
+                score_10 = 5.0  # 防 LLM 严重偏低兑底
+            merged['hidden_score'] = int(round(score_10 * 10))
+            merged['hidden_score_source'] = 'system:9_dim_avg_v4.1_split'
+        else:
+            merged['hidden_score'] = 50
+            merged['hidden_score_source'] = 'system:fallback_50'
+
+        return merged
+
     # ===== 阶段1：岗位分析 =====
     def analyze_position(self, position_name, tech_requirements, jd_content,
                          on_progress=None):
@@ -222,7 +305,11 @@ class AgentOrchestrator:
         self._emit(on_progress, 'stage_start', '', '简历评估',
                    '【v3.6】先跑技术+素质，隐性维度异步评估...', percent=20)
 
-        common_args = (position_name, tech_requirements, jd_content, resume_text,
+        # 【v4.1】截断长简历避免 prompt 过大（节省 token 和 LLM 推理时间）
+        from utils.text_truncate import truncate_for_prompt, clean_resume_text
+        safe_resume = truncate_for_prompt(clean_resume_text(resume_text or ''), max_chars=2500)
+
+        common_args = (position_name, tech_requirements, jd_content, safe_resume,
                        position_analysis, candidate_name)
         position_requirements_text = (tech_requirements or '') + '\n' + (jd_content or '')
 
@@ -259,8 +346,9 @@ class AgentOrchestrator:
                    f'，隐性维度评估中...', percent=65,
                    _extra=partial_payload)
 
-        # ========== 阶段B：hidden 单独跑（限时 180s）==========
-        # 用独立 executor，超时单独控制
+        # ========== 阶段B：hidden 拆为 A/B 并发（限时 90s）==========
+        # 【v4.1】拆分原因：原 hidden_evaluator 5803 字符 prompt 调一次要 60-75s
+        # 拆为 sub_a(人岗匹配, 3000 字符) + sub_b(稳定度+软性, 3000 字符) 并发
         import concurrent.futures
         app = current_app._get_current_object()
 
@@ -272,28 +360,41 @@ class AgentOrchestrator:
 
         hidden_r = None
         hidden_timed_out = False
-        self._emit(on_progress, 'agent_start', '隐性因素评估师', '简历评估',
-                   '开始评估隐性维度（9个维度加权）...', percent=68)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as hidden_ex:
-            f_h = hidden_ex.submit(_wrap_single(self.hidden_evaluator.evaluate), *common_args)
+        sub_a_r = None
+        sub_b_r = None
+        self._emit(on_progress, 'agent_start', '隐性因素评估师-A', '简历评估',
+                   '【v4.1拆分】评估人岗匹配维度（学历/居住地/职业方向）...', percent=68)
+        self._emit(on_progress, 'agent_start', '隐性因素评估师-B', '简历评估',
+                   '【v4.1拆分】评估稳定度+软性维度（真实度/稳定度/沟通/协作）...', percent=68)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as hidden_ex:
+            f_a = hidden_ex.submit(_wrap_single(self.hidden_sub_a.evaluate), *common_args)
+            f_b = hidden_ex.submit(_wrap_single(self.hidden_sub_b.evaluate), *common_args)
             try:
-                hidden_r = f_h.result(timeout=180)
-                if not hidden_r or not isinstance(hidden_r, dict):
-                    hidden_r = None
-                    logger.warning('[v3.6] hidden 评估师返回为空')
-                else:
-                    self._emit(on_progress, 'agent_complete', '隐性因素评估师', '简历评估',
-                               '隐性维度评估完成', percent=80)
+                # A 和 B 并发，取最慢的（max timeout 90s）
+                sub_a_r = f_a.result(timeout=90)
+                sub_b_r = f_b.result(timeout=90)
+                self._emit(on_progress, 'agent_complete', '隐性因素评估师-A', '简历评估',
+                           '人岗匹配评估完成', percent=78)
+                self._emit(on_progress, 'agent_complete', '隐性因素评估师-B', '简历评估',
+                           '稳定度+软性评估完成', percent=78)
             except concurrent.futures.TimeoutError:
                 hidden_timed_out = True
-                logger.error(f'[v3.6] hidden 评估师超时（180s 内未完成）')
+                # 超时时，收集已完成的部分结果
+                sub_a_r = sub_a_r if f_a.done() else None
+                sub_b_r = sub_b_r if f_b.done() else None
+                logger.error(f'[v4.1] hidden 拆分子任务超时（>90s），A={bool(sub_a_r)}, B={bool(sub_b_r)}')
                 self._emit(on_progress, 'agent_error', '隐性因素评估师', '简历评估',
-                           '隐性维度评估超时（>180s），将使用基础分（隐藏维度为中性 60）',
+                           '隐性维度评估超时（>90s），将使用基础分（隐藏维度为中性 60）',
                            percent=80)
             except Exception as e:
-                logger.error(f'[v3.6] hidden 评估师异常: {e}')
+                logger.error(f'[v4.1] hidden 拆分子任务异常: {e}')
                 self._emit(on_progress, 'agent_error', '隐性因素评估师', '简历评估',
                            f'隐性维度评估异常: {e}', percent=80)
+
+        # ========== 合并 sub_a + sub_b 结果到原 hidden 格式 ==========
+        hidden_r = self._merge_hidden_results(sub_a_r, sub_b_r)
+        if not hidden_r:
+            hidden_r = None
 
         # ========== 最终汇总（带 hidden）==========
         self._emit(on_progress, 'agent_start', '简历汇总师', '简历评估',
