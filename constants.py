@@ -1,4 +1,5 @@
 """常量定义"""
+import os
 
 # 面试会话状态
 class SessionStatus:
@@ -18,3 +19,8 @@ class ErrorCode:
     BAD_REQUEST = 400
     INTERNAL_ERROR = 500
     LLM_ERROR = 502
+
+# 【v4.1 演示前】LLM 调用缓存（跨模块共享常量）
+# 背景：services/llm_service.py 之前在模块顶层定义，现在集中到此便于其他模块引用
+LLM_CACHE_TTL = int(os.getenv('LLM_CACHE_TTL', '300'))  # 5 分钟
+LLM_CACHE_MAX = int(os.getenv('LLM_CACHE_MAX', '200'))  # 最多 200 条

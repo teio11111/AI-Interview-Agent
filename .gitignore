@@ -20,9 +20,9 @@ env/
 # Environment variables (contains secrets)
 .env
 
-# Database files (optional, uncomment if needed)
-# *.db
-# *.sqlite3
+# Database files (运行时生成，不入库)
+*.db
+*.sqlite3
 
 # OS files
 .DS_Store
@@ -35,6 +35,9 @@ test_*.py
 _*.py
 _*.txt
 _*.png
+# 【v4.1 演示前】但 tests/ 目录下的单元测试是正式代码，不应被上面规则排除
+!tests/
+!tests/test_*.py
 
 # 测试用 PDF 简历 / JD（不入库）
 DGT-java*.pdf

@@ -18,6 +18,8 @@ def create_app():
     # 加载配置
     from config.config import Config
     app.config.from_object(Config)
+    # 【v4.1 演示前】启动时安全检查
+    Config.warn_if_insecure()
 
     # 初始化数据库
     db.init_app(app)
