@@ -2,6 +2,21 @@
   "_comment": "更新日志数据。仅展示大版本（1.0/2.0/3.0/4.0），小版本 bug 修复不记录。",
   "versions": [
     {
+      "version": "v4.1",
+      "date": "2026-08-03",
+      "title": "演示前冲刺：配置硬化 + 评估拆分 + 重新评估",
+      "tag": "重大更新",
+      "tag_color": "success",
+      "items": [
+        "配置硬化：port/CORS/超时/重试统一从 .env 读取，支持 0 启用默认值",
+        "测试覆盖：tests/test_merge_hidden.py 15 项隐性维度合并单测 + smoke_test 扩到 93 项",
+        "简历评估拆分：LLM 评估拆为「基础分 + 隐性维度」两个独立调用，可独立重试",
+        "隐性维度异步评估：前端先看基础分，3-5 秒后追加维度详情，避免页面卡顿",
+        "【P0】候选人重新评估：新增 DELETE /api/candidates/<id>/ai-analysis，一键清除旧结果重跑 LLM",
+        "AI 评估缓存（in-memory + TTL 1h），重复候选人/岗位避免重复调用 LLM"
+      ]
+    },
+    {
       "version": "v4.0",
       "date": "2026-07-30",
       "title": "线上面试双流音频 + AI 语义匹配 + 安全加固",
