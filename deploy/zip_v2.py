@@ -18,10 +18,13 @@ EXCLUDE_GLOBS = ['_*.py', '_*.txt', '_*.png', 'test_*.png', 'test_*.py',
 
 import fnmatch
 
-def is_excluded(name):
-    """检查文件名是否匹配排除规则"""
+def is_excluded(name, rel_path=''):
+    """检查文件是否应被排除"""
     # __init__.py 等 Python 包标识文件永远不排除
     if name == '__init__.py':
+        return False
+    # tests/ 目录下的单元测试文件保留（不排除 tests/test_*.py）
+    if rel_path.startswith('tests' + os.sep) and name.startswith('test_'):
         return False
     # 直接文件名
     if name in EXCLUDE_FILES:
@@ -53,10 +56,10 @@ def main():
             # 过滤目录
             dirs[:] = [d for d in dirs if not is_excluded_dir(d)]
             for f in files:
-                if is_excluded(f):
-                    continue
                 full = os.path.join(root, f)
                 rel = os.path.relpath(full, PROJECT_ROOT)
+                if is_excluded(f, rel):
+                    continue
                 zf.write(full, rel)
                 count += 1
                 total_size += os.path.getsize(full)
