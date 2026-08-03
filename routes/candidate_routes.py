@@ -158,7 +158,20 @@ def analyze_candidate(id):
         logger.error(f'[v3.6.5] 同步出题异常: candidate={candidate.name}, error={e}')
         refined_questions = None
 
-    # 3. 同步创建 InterviewSession（优先用 LLM 定制题，失败才用兑底题）
+    # 3. 【bugfix】创建新 session 前，清理该候选人所有 preparing 状态的旧 session
+    # 背景：用户多次点"重新评估"会累积多个 preparing session，前端 restoreActiveSession
+    # 可能拿到旧的 session 导致显示过期题目。
+    old_sessions = InterviewRepository.find_sessions_by_candidate(candidate.id)
+    for old_sess in old_sessions:
+        if old_sess.status == SessionStatus.PREPARING:
+            old_dialogs = InterviewRepository.find_dialogs_by_session(old_sess.id)
+            for d in old_dialogs:
+                db.session.delete(d)
+            db.session.delete(old_sess)
+            logger.info(f'[bugfix] 清理旧 preparing session: session_id={old_sess.id}, candidate={candidate.name}')
+    db.session.commit()
+    
+    # 4. 同步创建 InterviewSession（优先用 LLM 定制题，失败才用底题）
     if refined_questions:
         session = InterviewSession(
             candidate_id=candidate.id,

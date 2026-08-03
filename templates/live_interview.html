@@ -383,9 +383,10 @@ function onCandidateChange() {
 // 已结束（completed）的会话由用户主动从历史会话查看报告，
 // 这里不要自动恢复——避免误导用户以为自己开始了新一轮面试。
 async function restoreActiveSession(candidateId) {
+    // 【bugfix】按 id 降序取最新 session（不依赖 created_at，避免时区/时钟问题）
     let targetSession = allSessions
         .filter(s => s.candidate_id === candidateId && (s.status === 'in_progress' || s.status === 'preparing'))
-        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+        .sort((a, b) => (b.id || 0) - (a.id || 0))[0];
 
     if (!targetSession) return;
 

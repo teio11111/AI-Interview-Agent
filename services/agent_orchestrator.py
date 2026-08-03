@@ -28,6 +28,7 @@ from agents import (
 )
 from utils import beijing_now
 from utils.logger import logger
+import re
 
 
 class AgentOrchestrator:
@@ -486,6 +487,9 @@ class AgentOrchestrator:
         
         results = self._run_parallel(agents_map, common_args, on_progress, '出题')
         
+        # 【bugfix】代码层安全网：过滤与岗位技术栈不匹配的题目
+        results = self._filter_off_topic_questions(results, position_name, tech_requirements)
+        
         # 选题官审核整合
         self._emit(on_progress, 'agent_start', '选题官', '出题', '正在审核整合题目...')
         start_coord = time.time()
@@ -515,9 +519,140 @@ class AgentOrchestrator:
                  'quality_notes': review_log.get('quality_notes', '')}
             ]
         
+        # 【bugfix】二次过滤：选题官 LLM 备份路径也可能引入不相关题目
+        if final and isinstance(final, dict) and final.get('questions'):
+            pos_type = self._detect_position_type(position_name, tech_requirements)
+            forbidden_map = {
+                'frontend': [
+                    r'\bjava\b', r'\bspring\b', r'\bspringboot\b', r'\bspring boot\b',
+                    r'\bjvm\b', r'\bmybatis\b', r'\bhibernate\b', r'\bmaven\b',
+                    r'\bgradle\b', r'\bkafka\b', r'\brabbitmq\b', r'\bredis\b',
+                    r'\bmysql\b', r'\bpostgresql\b', r'\bmicroservice\b', r'微服务',
+                    r'\bdubbo\b', r'\bnetty\b',
+                ],
+                'backend': [
+                    r'\breact\b', r'\bvue\b', r'\bangular\b', r'\bwebpack\b',
+                    r'\bvite\b', r'\btypescript\b', r'\bjavascript\b', r'\bhtml5\b',
+                    r'\bcss3\b', r'\becharts\b', r'\b小程序\b', r'\bh5\b',
+                ],
+            }
+            forbidden = forbidden_map.get(pos_type, [])
+            if forbidden:
+                original_count = len(final['questions'])
+                filtered_qs = []
+                for q in final['questions']:
+                    q_text = (q.get('question', '') + ' ' + q.get('target_skill', '') + ' ' + q.get('intent', '')).lower()
+                    if not any(re.search(p, q_text, re.IGNORECASE) for p in forbidden):
+                        filtered_qs.append(q)
+                    else:
+                        logger.warning(f'[岗位匹配过滤-二次] 移除: {q.get("question", "")[:60]}...')
+                final['questions'] = filtered_qs
+                removed = original_count - len(filtered_qs)
+                if removed > 0:
+                    logger.info(f'[岗位匹配过滤-二次] 从最终题目中移除 {removed} 道不相关题目')
+        
         return final
-
-    # ===== 阶段4a：面试对话评估（2并行+1主面试官）=====
+    
+    @staticmethod
+    def _detect_position_type(position_name, tech_requirements=''):
+        """检测岗位类型，用于过滤不相关的题目"""
+        name = (position_name or '').lower()
+        tech = (tech_requirements or '').lower()
+        combined = f'{name} {tech}'
+            
+        if any(kw in combined for kw in ['前端', 'web', 'h5', '移动', '客户端', 'ios',
+                                          'android', 'react', 'vue', 'angular', '小程序']):
+            return 'frontend'
+        if any(kw in combined for kw in ['算法', 'nlp', 'cv', '推荐', '深度学习',
+                                          '机器学习', '大模型', 'llm', 'rag', 'aigc']):
+            return 'algorithm'
+        if any(kw in combined for kw in ['数据', '分析', 'bi', 'etl', '数仓',
+                                          'data', 'analytics']):
+            return 'data'
+        if any(kw in combined for kw in ['测试', 'qa', 'sdet', '测开']):
+            return 'test'
+        return 'backend'
+    
+    @staticmethod
+    def _filter_off_topic_questions(results, position_name, tech_requirements=''):
+        """【bugfix】代码层安全网：过滤与岗位技术栈不匹配的题目
+            
+        防止 LLM 出题时跑偏到候选人简历中其他不相关的技术栈。
+        例如：前端岗位不应出现 Java/Spring/JVM 等后端题目。
+        """
+        pos_type = AgentOrchestrator._detect_position_type(position_name, tech_requirements)
+            
+        # 定义每个岗位类型的"禁忌关键词"——出现这些词的题目会被过滤
+        forbidden_keywords = {
+            'frontend': [
+                r'\bjava\b', r'\bspring\b', r'\bspringboot\b', r'\bspring boot\b',
+                r'\bjvm\b', r'\bmybatis\b', r'\bhibernate\b', r'\bmaven\b',
+                r'\bgradle\b', r'\bkafka\b', r'\brabbitmq\b', r'\bredis\b',
+                r'\bmysql\b', r'\bpostgresql\b', r'\bmicroservice\b', r'微服务',
+                r'\bdubbo\b', r'\bnetty\b',
+            ],
+            'backend': [
+                r'\breact\b', r'\bvue\b', r'\bangular\b', r'\bwebpack\b',
+                r'\bvite\b', r'\btypescript\b', r'\bjavascript\b', r'\bhtml5\b',
+                r'\bcss3\b', r'\becharts\b', r'\b小程序\b', r'\bh5\b',
+            ],
+            'algorithm': [
+                r'\bjava\b', r'\bspring\b', r'\breact\b', r'\bvue\b',
+                r'微服务', r'\bmysql\b', r'\bredis\b',
+            ],
+            'data': [
+                r'\bjava\b', r'\bspring\b', r'\breact\b', r'\bvue\b',
+                r'微服务', r'\bjvm\b',
+            ],
+            'test': [
+                r'\bjava\b', r'\bspring\b', r'\breact\b', r'\bvue\b',
+                r'微服务', r'\bjvm\b',
+            ],
+        }
+            
+        forbidden = forbidden_keywords.get(pos_type, [])
+        if not forbidden:
+            return results
+            
+        filtered_results = {}
+        total_removed = 0
+            
+        for agent_key, agent_result in results.items():
+            if not agent_result or not isinstance(agent_result, dict):
+                filtered_results[agent_key] = agent_result
+                continue
+                
+            questions = agent_result.get('questions', [])
+            if not questions:
+                filtered_results[agent_key] = agent_result
+                continue
+                
+            kept = []
+            for q in questions:
+                q_text = (q.get('question', '') + ' ' + q.get('target_skill', '') + ' ' + q.get('intent', '')).lower()
+                is_off_topic = False
+                for pattern in forbidden:
+                    if re.search(pattern, q_text, re.IGNORECASE):
+                        is_off_topic = True
+                        total_removed += 1
+                        logger.warning(
+                            f'[岗位匹配过滤] 移除不相关题目 (岗位={position_name}, '
+                            f'类型={pos_type}): {q.get("question", "")[:60]}...'
+                        )
+                        break
+                if not is_off_topic:
+                    kept.append(q)
+                
+            filtered_result = dict(agent_result)
+            filtered_result['questions'] = kept
+            filtered_results[agent_key] = filtered_result
+            
+        if total_removed > 0:
+            logger.info(f'[岗位匹配过滤] 共移除 {total_removed} 道与岗位不相关的题目')
+            
+        return filtered_results
+    
+    # ===== 阶4a：面试对话评估（2并行+1主面试官）=====
     def evaluate_dialog(self, candidate_name, position_name, resume_text,
                         dialog_history, question, answer, on_progress=None):
         """阶段4a：两位顾问并行评估 + 主面试官综合决策

@@ -260,11 +260,23 @@ def stream_candidate_analysis(candidate_id):
                            'message': '正在生成兜底面试题（保证 5 道题立即可用）…',
                            'percent': 80})
 
-                    # 阶段B: 同步生成兑底题目（不调 LLM，<0.5s）
+                    # 阶段B: 同步生成兖底题目（不调 LLM，<0.5s）
                     from services.interview_service import InterviewService
                     fallback_questions = InterviewService.generate_fallback_questions(
                         pos, cand.resume_text
                     )
+                    
+                    # 【bugfix】创建新 session 前，清理该候选人所有 preparing 状态的旧 session
+                    old_sessions = InterviewRepository.find_sessions_by_candidate(cand.id)
+                    for old_sess in old_sessions:
+                        if old_sess.status == SessionStatus.PREPARING:
+                            old_dialogs = InterviewRepository.find_dialogs_by_session(old_sess.id)
+                            for d in old_dialogs:
+                                db.session.delete(d)
+                            db.session.delete(old_sess)
+                            logger.info(f'[bugfix] 清理旧 preparing session: session_id={old_sess.id}, candidate={cand.name}')
+                    db.session.commit()
+                    
                     sess = InterviewSession(
                         candidate_id=cand.id,
                         status=SessionStatus.PREPARING,
