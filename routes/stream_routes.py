@@ -218,7 +218,10 @@ def stream_candidate_analysis(candidate_id):
         #       浪费资源且前端可能因延迟响应看到“僵尸请求”。
         # 修复：SSE 超时立即 set stop_event，worker 在关键阶段检查并提前退出。
         stop_event = threading.Event()
-        SSE_TIMEOUT = 320
+        # 【v4.3】SSE_TIMEOUT 从 320s 调高到 600s（10 分钟）
+        # 背景：stage A 简历评估 30-60s + stage B 隐性评估 60-150s + stage C 出题 60-180s
+        #       最坏路径合计 390s+，原先 320s 会导致 stage C 出题阶段被误超时。
+        SSE_TIMEOUT = 600
         # 前端预警阈值（60s）：此处仅作文档化，实际由前端独立计时。
         SLOW_WARNING_AT = 60
 
@@ -387,7 +390,8 @@ def stream_candidate_analysis(candidate_id):
                     yield _sse_event('progress', {
                         'agent': 'AI 调度员',
                         'stage': '简历评估',
-                        'message': 'AI 隐性维度深度分析中（最长 30 秒）...',
+                        # 【v4.3】去除误导性 30s，改用隐性维度评估一般需要 1-2 分钟
+                        'message': 'AI 隐性维度深度分析中...',
                         'percent': 72,
                     })
 

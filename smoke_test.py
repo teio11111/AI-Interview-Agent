@@ -443,12 +443,12 @@ def test_k_v36_async(opener):
         'orchestrator evaluate_resume 已拆为 tech+soft / hidden 两阶段':
             ('阶段A：tech + soft 并发（限时 120s）' in
              open('services/agent_orchestrator.py', encoding='utf-8').read()
-             and 'f_a.result(timeout=90)' in
+             and 'f_a.result(timeout=150)' in
              open('services/agent_orchestrator.py', encoding='utf-8').read()),
         '_emit 支持 _extra 参数（传 partial_result payload）':
             '_extra' in open('services/agent_orchestrator.py', encoding='utf-8').read(),
-        'SSE stream_candidate_analysis SSE_TIMEOUT=320':
-            'SSE_TIMEOUT = 320' in open('routes/stream_routes.py', encoding='utf-8').read(),
+        'SSE stream_candidate_analysis SSE_TIMEOUT=600':
+            'SSE_TIMEOUT = 600' in open('routes/stream_routes.py', encoding='utf-8').read(),
         'generate() 顶部 inline import CandidateRepository（闭包 fix）':
             ('from repositories.candidate_repository import CandidateRepository' in
              open('routes/stream_routes.py', encoding='utf-8').read()),

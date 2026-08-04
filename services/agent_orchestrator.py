@@ -403,9 +403,11 @@ class AgentOrchestrator:
                    f'，隐性维度评估中...', percent=65,
                    _extra=partial_payload)
 
-        # ========== 阶段B：hidden 拆为 A/B 并发（限时 90s）==========
+        # ========== 阶段B：hidden 拆为 A/B 并发（限时 150s）==========
         # 【v4.1】拆分原因：原 hidden_evaluator 5803 字符 prompt 调一次要 60-75s
         # 拆为 sub_a(人岗匹配, 3000 字符) + sub_b(稳定度+软性, 3000 字符) 并发
+        # 【v4.3】超时从 90s 提升到 150s：DeepSeek 单次调用可能 60s+，拆分后两路并发 60-90s，
+        #         90s 临界容易误超时。150s 留足余量。
         import concurrent.futures
         app = current_app._get_current_object()
 
@@ -427,9 +429,10 @@ class AgentOrchestrator:
             f_a = hidden_ex.submit(_wrap_single(self.hidden_sub_a.evaluate), *common_args)
             f_b = hidden_ex.submit(_wrap_single(self.hidden_sub_b.evaluate), *common_args)
             try:
-                # A 和 B 并发，取最慢的（max timeout 90s）
-                sub_a_r = f_a.result(timeout=90)
-                sub_b_r = f_b.result(timeout=90)
+                # A 和 B 并发，取最慢的（max timeout 150s）
+                # 【v4.3】150s 超时（之前 90s），留足 LLM 慢调用的余量。
+                sub_a_r = f_a.result(timeout=150)
+                sub_b_r = f_b.result(timeout=150)
                 self._emit(on_progress, 'agent_complete', '隐性因素评估师-A', '简历评估',
                            '人岗匹配评估完成', percent=78)
                 self._emit(on_progress, 'agent_complete', '隐性因素评估师-B', '简历评估',
@@ -439,9 +442,9 @@ class AgentOrchestrator:
                 # 超时时，收集已完成的部分结果
                 sub_a_r = sub_a_r if f_a.done() else None
                 sub_b_r = sub_b_r if f_b.done() else None
-                logger.error(f'[v4.1] hidden 拆分子任务超时（>90s），A={bool(sub_a_r)}, B={bool(sub_b_r)}')
+                logger.error(f'[v4.3] hidden 拆分子任务超时（>150s），A={bool(sub_a_r)}, B={bool(sub_b_r)}')
                 self._emit(on_progress, 'agent_error', '隐性因素评估师', '简历评估',
-                           '隐性维度评估超时（>90s），将使用基础分（隐藏维度为中性 60）',
+                           '隐性维度评估超时（>150s），将使用基础分（隐藏维度为中性 60）',
                            percent=80)
             except Exception as e:
                 logger.error(f'[v4.1] hidden 拆分子任务异常: {e}')
