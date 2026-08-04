@@ -670,19 +670,27 @@ async function startQuestionDesign(candidateId) {
         initialMsg: 'AI 正在生成面试题...',
         initialSub: '【v4.4 拆分】简历评估已完成，现在独立出题',
         async onComplete(payload) {
-            // 出题完成 → 创建 session → 关闭旧 modal 重新弹 final modal（含「开始面试」按钮）
+            // 出题完成 → 创建 session → 弹 toast 提示 + 自动跳转到面试工作台
             _aiEvalJob.session = payload.session || null;
-            updateAiCornerBadge(
-                `<i class="bi bi-check2-circle"></i> ${cand.name} 评估 + 出题 + 会话已全部完成，点击查看`,
-                true
-            );
+            const qCount = (payload.result?.questions || []).length;
+            const targetSessionId = payload.session?.id;
+            // 关掉旧的 final modal
             const aiModalInstance = bootstrap.Modal.getInstance(document.getElementById('aiModal'));
             if (aiModalInstance) aiModalInstance.hide();
-            // 重新渲染 final modal（这次带 session）
-            showAiResult(_aiEvalJob.final, _aiEvalJob.session, { isPartial: false });
-            showToast(`✅ ${cand.name} 出题完成（${(payload.result?.questions || []).length} 题），可以开始面试了`, 'success', 5000);
-            // 刷新候选人列表
-            try { await loadCandidates(); } catch(e) { console.error(e); }
+            // 提示用户正在跳转
+            showToast(`✅ ${cand.name} 出题完成（${qCount} 题），正在进入面试工作台...`, 'success', 2000);
+            // 角标显示完成状态
+            updateAiCornerBadge(
+                `<i class="bi bi-check2-circle"></i> ${cand.name} 评估 + 出题 + 会话已全部完成`,
+                true
+            );
+            // 【v4.4.1】出题完成后自动跳转到面试工作台（带 session_id 参数，以便高亮刚创建的会话）
+            // 保持 window.location 跳转，最小依赖：interview.html 加载后会调 loadSessions() 列出全部会话
+            setTimeout(() => {
+                window.location.href = targetSessionId
+                    ? `/interview?session_id=${targetSessionId}`
+                    : '/interview';
+            }, 600);  // 600ms 让 toast 提示可见
         },
         async onError(message) {
             // 出题失败：按钮恢复 + 角标显示错误

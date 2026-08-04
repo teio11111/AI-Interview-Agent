@@ -656,6 +656,18 @@ def test_m_v44_split(opener):
         # 后端：独立出题接口仍存在（复用 interview.html 也在用的 /api/stream/questions/<id>）
         'routes/stream_routes.py stream_question_generation 接口仍存在':
             "def stream_question_generation(candidate_id):" in stream_src,
+
+        # 【v4.4.1】出题完成后自动跳转到面试工作台
+        'candidates.html startQuestionDesign onComplete 调用 window.location.href 跳转':
+            ('window.location.href' in candidates_src
+             and '/interview?session_id=' in candidates_src),
+        'candidates.html startQuestionDesign 跳转前先弹 toast 提示':
+            ('正在进入面试工作台' in candidates_src),
+        'interview.html URL 参数 ?session_id= 自动选中会话':
+            ("URLSearchParams(window.location.search).get('session_id')" in
+             open('templates/interview.html', encoding='utf-8').read()
+             and "if (urlSid) selectSession(parseInt(urlSid))" in
+             open('templates/interview.html', encoding='utf-8').read()),
     }
     for name, ok in items.items():
         _record('M', name, 'PASS' if ok else 'FAIL')

@@ -843,6 +843,10 @@ async function submitDialog() {
     }
 }
 
-loadCandidates().then(() => loadSessions());
+loadCandidates().then(() => loadSessions()).then(() => {
+    // 【v4.4.1】URL 参数 ?session_id=xxx → 自动选中刚跳转过来的会话（出题完成后跳转）
+    const urlSid = new URLSearchParams(window.location.search).get('session_id');
+    if (urlSid) selectSession(parseInt(urlSid));
+});
 </script>
 {% endblock %}
