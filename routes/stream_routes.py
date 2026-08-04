@@ -1,5 +1,6 @@
 """SSE 流式路由 - 多智能体协作过程实时推送"""
 from flask import Blueprint, Response, stream_with_context, request, current_app
+from extensions import db
 from repositories.candidate_repository import CandidateRepository
 from repositories.position_repository import PositionRepository
 from repositories.interview_repository import InterviewRepository
