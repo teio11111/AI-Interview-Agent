@@ -668,6 +668,18 @@ def test_m_v44_split(opener):
              open('templates/interview.html', encoding='utf-8').read()
              and "if (urlSid) selectSession(parseInt(urlSid))" in
              open('templates/interview.html', encoding='utf-8').read()),
+
+        # 【v4.4.2】出题 SSE 期间的进度心跳与总超时保护
+        'routes/stream_routes.py stream_question_generation 加了总超时 question_timeout':
+            ('question_timeout =' in stream_src
+             and '生成题目超过' in stream_src),
+        'routes/stream_routes.py 出题 SSE 增加业务心跳（LLM 仍在生成）':
+            ('LLM 仍在生成题目' in stream_src
+             and 'heartbeat_interval' in stream_src),
+        'routes/stream_routes.py import time 已添加（v4.4.2 修复 NameError）':
+            'import time' in stream_src.splitlines()[:25].__repr__() or any(
+                line.strip() == 'import time' for line in stream_src.splitlines()[:25]
+            ),
     }
     for name, ok in items.items():
         _record('M', name, 'PASS' if ok else 'FAIL')

@@ -15,6 +15,7 @@ from utils.logger import logger
 import json
 import queue
 import threading
+import time
 
 stream_bp = Blueprint('stream', __name__, url_prefix='/api/stream')
 
@@ -389,7 +390,10 @@ def stream_question_generation(candidate_id):
         q, on_progress = _create_progress_bridge()
         app = current_app._get_current_object()
         result_holder = {'result': None, 'error': None}
-        
+        start_time = time.time()
+        question_timeout = 360
+        heartbeat_interval = 5
+
         def worker():
             with app.app_context():
                 try:
@@ -401,18 +405,32 @@ def stream_question_generation(candidate_id):
                     result_holder['error'] = str(e)
                 finally:
                     q.put('__DONE__')
-        
+
         t = threading.Thread(target=worker, daemon=True)
         t.start()
-        
+
         while True:
+            elapsed = time.time() - start_time
+            if elapsed >= question_timeout:
+                result_holder['error'] = (
+                    f'生成题目超过 {question_timeout}s 未完成，可能是 LLM 服务繁忙，请稍后重试。'
+                )
+                logger.warning(
+                    f'[stream_question_generation] SSE 超时 {elapsed:.1f}s，candidate_id={candidate_id}'
+                )
+                break
             try:
-                event = q.get(timeout=180)
+                event = q.get(timeout=heartbeat_interval)
                 if event == '__DONE__':
                     break
                 yield _sse_event('progress', event)
             except queue.Empty:
-                yield f": keepalive\n\n"
+                elapsed_seconds = int(time.time() - start_time)
+                yield _sse_event('progress', {
+                    'agent': 'AI 出题调度员',
+                    'stage': '出题',
+                    'message': f'LLM 仍在生成题目，已等待 {elapsed_seconds}s，请耐心等待...',
+                })
         
         if result_holder['error']:
             yield _sse_event('error', {'message': result_holder['error']})
