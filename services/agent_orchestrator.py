@@ -1,5 +1,6 @@
 """Agent 编排器 - 协调多智能体协作完成面试流程（专家小组+汇总裁判模式）"""
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures  # 【v4.2 修复】wait/FIRST_COMPLETED 需要 concurrent.futures 模块
+from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore
 from flask import current_app
 import time
@@ -121,7 +122,7 @@ class AgentOrchestrator:
             except Exception:
                 pass
 
-    def _run_parallel(self, agents_map, common_args, on_progress, stage, max_workers=3):
+    def _run_parallel(self, agents_map, common_args, on_progress, stage, max_workers=3, timeout_per_agent=180):
         """通用并行执行器：并行调用多个 Agent，收集结果
 
         【v3.0 重要修复】默认 max_workers=2（从 3 调低）
@@ -134,12 +135,17 @@ class AgentOrchestrator:
             每个 agent_complete = base + step/2 + i*step
           - 这样前端 bar 不会一直卡 75%，而是随 agent 推进平滑增长。
 
+        【v4.2 修复】增加 per-agent 超时保护，防止某个 Agent 卡死导致整个流程永久阻塞
+          - 背景：LLM_TIMEOUT=110s × 3 retries + backoff = 最坏 373s
+          - 修复：每个 agent 有独立的超时预算（默认 180s），超时后视为失败，不阻塞其他 agent
+
         Args:
             agents_map: {key: (name, func)} 字典
             common_args: 公共参数元组
             on_progress: 进度回调
             stage: 阶段名称
             max_workers: 最大线程数（默认 2，避免 LLM 限流）
+            timeout_per_agent: 每个 agent 超时秒数（默认 180s）
 
         Returns:
             dict: {key: result}
@@ -167,27 +173,77 @@ class AgentOrchestrator:
                     return f(*args)
             return wrapper
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 【v4.2 关键修复】不使用 `with ThreadPoolExecutor(...) as executor:`
+        # 原因：`with` 块退出时会调用 `executor.shutdown(wait=True)`，会阻塞
+        #       等待所有线程完成，导致超时后仍被卡死的 agent 阻塞整个函数。
+        # 修复：手动管理，超时后调用 `shutdown(wait=False)` 立即返回。
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
             for key, (name, func) in agents_map.items():
                 future = executor.submit(_wrap(func), *common_args)
                 futures[future] = (key, name)
 
-            for future in as_completed(futures):
-                key, name = futures[future]
-                elapsed = round(time.time() - start, 1)
-                # 按完成顺序拿到 i，再算 percent
-                i = next((idx for idx, (k, (n2, _)) in enumerate(agent_list) if k == key), 0)
-                pct = base_pct + step // 2 + i * step
+            # 【v4.2】使用 wait + FIRST_COMPLETED 逐批取结果，遵守 per-agent 超时
+            remaining = dict(futures)
+            while remaining:
+                elapsed = time.time() - start
+                if elapsed >= timeout_per_agent:
+                    # 全局超时：剩余全部标记为失败
+                    for f, (k, nm) in remaining.items():
+                        results[k] = None
+                        idx = next((i for i, (kk, _) in enumerate(agent_list) if kk == k), 0)
+                        pct = base_pct + step // 2 + idx * step
+                        logger.error(f'[{nm}] {stage} 超时（>{timeout_per_agent}s），强制标记为失败')
+                        self._emit(on_progress, 'agent_error', nm, stage,
+                                   f'{nm}超时（>{timeout_per_agent}s）', percent=pct)
+                        f.cancel()
+                    break
+
                 try:
-                    results[key] = future.result()
-                    self._emit(on_progress, 'agent_complete', name, stage,
-                               f'{name}完成 ({elapsed}s)', percent=pct)
+                    done, _ = concurrent.futures.wait(
+                        remaining.keys(),
+                        timeout=min(5, timeout_per_agent - elapsed),
+                        return_when=concurrent.futures.FIRST_COMPLETED
+                    )
                 except Exception as e:
-                    logger.error(f'[{name}] {stage}失败: {e}')
-                    results[key] = None
-                    self._emit(on_progress, 'agent_error', name, stage,
-                               f'{name}出错: {e}', percent=pct)
+                    logger.error(f'_run_parallel wait 异常: {e}')
+                    break
+
+                if not done:
+                    continue  # 超时轮询，避免全局超时后陷入空转
+
+                for f in done:
+                    key, name = remaining.pop(f)
+                    elapsed = round(time.time() - start, 1)
+                    i = next((idx for idx, (k, (n2, _)) in enumerate(agent_list) if k == key), 0)
+                    pct = base_pct + step // 2 + i * step
+                    try:
+                        results[key] = f.result(timeout=1)
+                        self._emit(on_progress, 'agent_complete', name, stage,
+                                   f'{name}完成 ({elapsed}s)', percent=pct)
+                    except concurrent.futures.TimeoutError:
+                        logger.error(f'[{name}] {stage} 结果获取超时')
+                        results[key] = None
+                        self._emit(on_progress, 'agent_error', name, stage,
+                                   f'{name}超时', percent=pct)
+                    except Exception as e:
+                        logger.error(f'[{name}] {stage}失败: {e}')
+                        results[key] = None
+                        self._emit(on_progress, 'agent_error', name, stage,
+                                   f'{name}出错: {e}', percent=pct)
+        finally:
+            # 【v4.2 关键】wait=False：不等待卡死的线程，函数立即返回。
+            #   背景：被取消的 future 仍会在线程里跑剩余代码（cancel 只能取消未开始的任务），
+            #         但因为线程是非 daemon，会阻止进程退出。
+            #   修复：将工作线程设为 daemon，确保进程退出时强制杀死。
+            import threading as _t
+            for t in getattr(executor, '_threads', []):
+                try:
+                    t.daemon = True
+                except Exception:
+                    pass
+            executor.shutdown(wait=False)
 
         return results
 

@@ -216,14 +216,76 @@ class LlmService:
         # 【v3.1 截断修复】补全未闭合的 JSON
         # 背景：max_tokens 限制可能让 LLM 输出被截断，括号没闭合。
         # 策略：删除最后一个未闭合括号之后的内容，补全缺失的 ] 和 } 后再尝试解析。
+        def _try_fix_unescaped_quotes(text):
+            """【v4.2】修复字符串内的未转义双引号
+
+            场景：LLM 在 JSON 字符串值中输出未转义的双引号（常见为中文文本中
+            的引号包裹词，如"主导""推动"），导致原括号匹配器误判为字符串结束。
+
+            策略：状态机扫描。当在字符串内遇到"时，跳过后续空白，
+            如果下一个字符是 , } ] : 等 JSON 分隔符，则认为是字符串结束，
+            否则当作字面引号，转义为 \\"。
+
+            Returns:
+                str: 修复后的文本（可能未变动），解析失败返回 None。
+            """
+            result = []
+            i = 0
+            n = len(text)
+            in_string = False
+            modified = False
+
+            while i < n:
+                c = text[i]
+                if not in_string:
+                    if c == '"':
+                        in_string = True
+                        result.append(c)
+                        i += 1
+                    else:
+                        result.append(c)
+                        i += 1
+                    continue
+
+                # --- 在字符串内部 ---
+                if c == '\\':
+                    # 已是转义序列，直接复制
+                    result.append(c)
+                    if i + 1 < n:
+                        result.append(text[i + 1])
+                        i += 2
+                    else:
+                        i += 1
+                elif c == '"':
+                    # 判断这个"是不是真正的字符串结束符
+                    j = i + 1
+                    while j < n and text[j] in ' \t\n\r':
+                        j += 1
+                    if j < n and text[j] in ',}]:':
+                        # 真正的字符串结束符
+                        in_string = False
+                        result.append(c)
+                        i += 1
+                    else:
+                        # 未转义双引号，转义之
+                        result.append('\\"')
+                        modified = True
+                        i += 1
+                else:
+                    result.append(c)
+                    i += 1
+
+            return ''.join(result) if modified else None
+
         def _try_repair_truncated_json(text):
-            """补全被截断的 JSON：删除未闭合位置之后的内容，补全闭合括号。"""
+            """补全被截断的 JSON：定位截断点，删除末尾不全部分，补全闭合括号。"""
             # 【v3.1】去掉 markdown 包裹（保留 inner），避免把 ``` 当成 JSON 内容
             text = re.sub(r'^\s*```(?:json)?\s*', '', text)
             text = re.sub(r'\s*```\s*$', '', text)
 
-            # 第一遍扫描：找未闭合括号（保留 stack 来追踪位置）
-            stack = []  # [(char, pos), ...]
+            # 第一遍扫描：找未闭合括号和未闭合字符串的起始位置
+            stack = []  # [(char, pos), ...] 未闭合的 { [
+            str_start = -1  # 当前未闭合字符串的起始位置
             in_str = False
             escape = False
             for i, c in enumerate(text):
@@ -234,6 +296,10 @@ class LlmService:
                     escape = True
                     continue
                 if c == '"':
+                    if in_str:
+                        str_start = -1  # 字符串已闭合
+                    else:
+                        str_start = i  # 记录当前字符串起点（未闭合则保留）
                     in_str = not in_str
                     continue
                 if in_str:
@@ -247,13 +313,22 @@ class LlmService:
                     if stack and stack[-1][0] == '[':
                         stack.pop()
 
-            if not stack:
+            if not stack and str_start == -1:
                 return None  # 完整 JSON，没有截断
 
-            # 截断点 = 最后一个未闭合括号的起始位置
-            # 删除该位置之后的所有内容（之后的内容可能是字符串中间、不完整字段）
-            last_open_char, last_open_pos = stack[-1]
-            truncated = text[:last_open_pos]
+            # 【v4.2 修复】截断点逻辑：
+            # 1) 如果存在未闭合字符串：在该字符串起点处截断（保留前面的全部内容）
+            # 2) 否则（括号未闭合）：保留全部内容
+            if str_start != -1:
+                truncated = text[:str_start]
+            else:
+                truncated = text
+
+            # 去掉尾部残留的孤立的 key（例：..."hidden_summary": 或 ..."hidden_summary"）
+            # 同时处理 key 后可能有 : 或 : <残缺值> 的情况
+            truncated = re.sub(r',?\s*"[^"]*"\s*(?::\s*(?:"[^"]*"?)?)?\s*$', '', truncated)
+            # 去掉尾部残留的 , : 或空白（避免产生 invalid JSON）
+            truncated = re.sub(r'[\s,:]*$', '', truncated)
 
             # 重新统计 truncated 里的括号深度（决定要补多少闭合）
             depth_curly = 0
@@ -281,13 +356,6 @@ class LlmService:
                 elif c == ']':
                     depth_square -= 1
 
-            # 如果字符串还在进行中，补一个引号闭合
-            if in_str2:
-                truncated += '"'
-
-            # 【v3.1】去掉尾部逗号（截断常产生 trailing comma，违反 JSON 语法）
-            truncated = re.sub(r',\s*$', '', truncated)
-
             # 补全闭合括号
             repaired = truncated + (']' * depth_square) + ('}' * depth_curly)
             try:
@@ -296,9 +364,22 @@ class LlmService:
                 return None
 
         repaired = _try_repair_truncated_json(cleaned)
-        if repaired:
+        if repaired is not None:
             logger.warning(f'[JSON 修复] 成功补全被截断的 JSON（cleaned_len={len(cleaned)}）')
             return repaired
+
+        # 【v4.2 增强容错】修复字符串内的未转义双引号
+        # 背景：LLM 偶尔会在字符串值里写中文双引号包围的词（如"主导""推动"），
+        # 原括号匹配器会把这些"当作字符串结束符，导致 depth 错乱解析失败。
+        # 策略：状态机扫描字符串值，如果遇到非分隔符后续的"则转义为\\"
+        fixed = _try_fix_unescaped_quotes(cleaned)
+        if fixed and fixed != cleaned:
+            try:
+                result_obj = json.loads(fixed)
+                logger.warning(f'[JSON 修复] 修复未转义引号后解析成功（cleaned_len={len(cleaned)}）')
+                return result_obj
+            except json.JSONDecodeError:
+                pass
 
         logger.error(f'无法从 LLM 响应中解析 JSON（剥离思考块后仍失败）: cleaned_len={len(cleaned)} cleaned_full={cleaned!r}')
         return None

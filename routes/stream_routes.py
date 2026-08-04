@@ -210,10 +210,11 @@ def stream_candidate_analysis(candidate_id):
             'partial_resume': None,       # 【v3.6】partial 结果（tech+soft）
             'partial_saved_at_step': None, # 【v3.6】partial 是否已写入人库
         }
-        # 【v3.6】SSE 超时 320s = 120(基础) + 180(hidden) + 20(buffer)
-        # 阶段 A: tech+soft ≤120s 后 yield partial_complete（推前端）并入友
-        # 阶段 B: hidden 单独跑 ≤180s
-        # 总 SSE 保持连接直到 2 阶段都完成，避免前端误以为“卡住了”
+        # 【v4.2 修复】使用 stop_event 实现 SSE 超时后主动取消 worker
+        # 背景：之前 SSE_TIMEOUT 只中断主循环，但 worker 线程继续在后台跑 LLM 调用，
+        #       浪费资源且前端可能因延迟响应看到“僵尸请求”。
+        # 修复：SSE 超时立即 set stop_event，worker 在关键阶段检查并提前退出。
+        stop_event = threading.Event()
         SSE_TIMEOUT = 320
         # 前端预警阈值（60s）：此处仅作文档化，实际由前端独立计时。
         SLOW_WARNING_AT = 60
@@ -224,6 +225,10 @@ def stream_candidate_analysis(candidate_id):
             # "imports not allowed at top of function" 带来 other-name free variable 问题
             from services.resume_service import ResumeService
             with app.app_context():
+                # 【v4.2】在长任务前检查 stop_event，被取消则直接 return
+                if stop_event.is_set():
+                    result_holder['error'] = 'SSE 已超时，worker 被取消'
+                    return
                 try:
                     cand = CandidateRepository.find_by_id(candidate_id)
                     pos = PositionRepository.find_by_id(cand.position_id)
@@ -235,6 +240,10 @@ def stream_candidate_analysis(candidate_id):
                            'percent': 15})
 
                     # 阶段A: 简历评估（同步必须完成）
+                    # 【v4.2】进入重负载 LLM 阶段前检查 stop_event
+                    if stop_event.is_set():
+                        result_holder['error'] = 'SSE 已超时，取消简历评估'
+                        return
                     result_holder['resume'] = ResumeService.analyze_resume(
                         pos, cand.resume_text, cand.name, on_progress=on_progress,
                     )
@@ -348,9 +357,11 @@ def stream_candidate_analysis(candidate_id):
         _last_idle_progress = start_time
 
         while True:
-            # 超时控制：超过 120s 强制 yield error
+            # 超时控制：超过 320s 强制 yield error
             elapsed = time.time() - start_time
             if elapsed > SSE_TIMEOUT:
+                # 【v4.2】设置 stop_event，通知 worker 提前退出
+                stop_event.set()
                 result_holder['error'] = (
                     f'简历分析超过 2 分钟未返回，可能是 LLM 服务忙或简历过长。'
                     f'请稍后重试，或检查网络/服务状态。'
