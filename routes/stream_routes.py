@@ -169,14 +169,16 @@ def stream_resume_evaluation(candidate_id):
 @stream_bp.route('/candidate-analysis/<int:candidate_id>', methods=['POST'])
 @login_required(role='admin')
 def stream_candidate_analysis(candidate_id):
-    """SSE: 候选人分析全流水线（v2.2 重构【同步仅简历评估 + 兑底题、LLM 出题后台异步】）
+    """SSE: 候选人分析全流水线（v4.3 重构【同步简历评估 + LLM 出题，无兑底题】）
 
     设计：
-      阶段A 【同步、必须完成】简历评估（3并行 + 1汇总）→ ~30-35s
-      阶段B 【同步、<0.5s】兑底题目生成 → 主线程不等待 LLM
-      阶段C 【后台异步】LLM 真出题，由 daemon 线程跑，跑完后写 session.questions_plan
+      阶段A 【同步、必须完成】简历评估（3并行 + 1汇总）→ ~30-180s
+      阶段B 【同步】LLM 出题（3出题官 + 选题官）→ ~60-180s
+      【v4.3 重要变更】去除兑底题，用户明确要求不要兑底题
+        原因：兑底题出现会让用户以为系统有 bug
+        方案：LLM 出题失败 → SSE error → 前端「分析失败」UI + 重试按钮
 
-    SSE 超时：【v3.3】120s 强制 yield error，1分钟后前端预警提示用户“分析时间偏长”。
+    SSE 超时：【v3.3】320s 强制 yield error，超时后设置 stop_event 让 worker 提前退出。
     """
     candidate = CandidateRepository.find_by_id(candidate_id)
     if not candidate:
@@ -263,19 +265,33 @@ def stream_candidate_analysis(candidate_id):
                     cand.ai_analysis = json.dumps(result_holder['resume'], ensure_ascii=False)
                     cand.match_score = 0 if is_llm_failed else result_holder['resume'].get('match_score', 0)
                     CandidateRepository.update(cand)
-
-                    q.put({'event': 'progress', 'stage': '兑底题目',
-                           'agent': '题目模板',
-                           'message': '正在生成兜底面试题（保证 5 道题立即可用）…',
-                           'percent': 80})
-
-                    # 阶段B: 同步生成兖底题目（不调 LLM，<0.5s）
-                    from services.interview_service import InterviewService
-                    fallback_questions = InterviewService.generate_fallback_questions(
-                        pos, cand.resume_text
-                    )
                     
-                    # 【bugfix】创建新 session 前，清理该候选人所有 preparing 状态的旧 session
+                    q.put({'event': 'progress', 'stage': '出题',
+                           'agent': 'AI 调度员',
+                           'message': '简历评估完成，开始 LLM 出题...',
+                           'percent': 80})
+                    
+                    # 【v4.3 去除兑底题】LLM 出题同步执行
+                    # 背景：用户明确要求不要兑底题（兑底题出现会以为系统 bug）。
+                    # 修复：去掉 generate_fallback_questions 兑底环节。
+                    #      LLM 出题改为主路径，同步跑 design_questions。
+                    # 失败处理：LLM 出题失败 → SSE error → 前端「分析失败」UI。
+                    from services.interview_service import InterviewService as _IS3
+                    try:
+                        llm_questions = _IS3.generate_questions(
+                            pos, cand, pos.ai_analysis, cand.ai_analysis,
+                            cand.resume_text, on_progress=on_progress,
+                        )
+                    except Exception as _e:
+                        logger.error(f'[v4.3] LLM 出题异常: candidate={cand.name}, error={_e}')
+                        result_holder['error'] = f'LLM 出题失败: {_e}'
+                        return
+                    if not llm_questions or not llm_questions.get('questions'):
+                        logger.error(f'[v4.3] LLM 出题返回空: candidate={cand.name}')
+                        result_holder['error'] = 'LLM 出题返回为空，请检查 LLM 服务后重试'
+                        return
+                    
+                    # 清理旧 preparing session
                     old_sessions = InterviewRepository.find_sessions_by_candidate(cand.id)
                     for old_sess in old_sessions:
                         if old_sess.status == SessionStatus.PREPARING:
@@ -283,68 +299,23 @@ def stream_candidate_analysis(candidate_id):
                             for d in old_dialogs:
                                 db.session.delete(d)
                             db.session.delete(old_sess)
-                            logger.info(f'[bugfix] 清理旧 preparing session: session_id={old_sess.id}, candidate={cand.name}')
+                            logger.info(f'[v4.3] 清理旧 preparing session: session_id={old_sess.id}, candidate={cand.name}')
                     db.session.commit()
                     
+                    # 创建新 session (含 LLM 出的题)
                     sess = InterviewSession(
                         candidate_id=cand.id,
                         status=SessionStatus.PREPARING,
-                        questions_plan=json.dumps(fallback_questions, ensure_ascii=False)
+                        questions_plan=json.dumps(llm_questions, ensure_ascii=False)
                     )
                     InterviewRepository.save_session(sess)
                     result_holder['session_dict'] = sess.to_dict()
-                    result_holder['completed_at_step'] = 'fallback_session_created'
-                    result_holder['fallback_session'] = sess  # 【v3.6.5】保存引用，便于覆盖
-
-                    q.put({'event': 'progress', 'stage': '兑底题目',
-                           'agent': '题目模板',
-                           'message': '兜底面试题已生成',
+                    result_holder['completed_at_step'] = 'llm_questions_session_created'
+                    
+                    q.put({'event': 'progress', 'stage': '出题',
+                           'agent': 'AI 调度员',
+                           'message': f'LLM 出题完成，共 {len(llm_questions.get("questions", []))} 题',
                            'percent': 95})
-
-                    # 【v4.1 性能修复】LLM 精修出题改为 daemon thread 异步执行
-                    # v3.6.5 改同步导致总耗时从 ~68s 暴增到 ~170s（违反 60s SLA）
-                    # 修复：先用兑底题立即返回 SSE complete，精修出题在后台异步完成
-                    # 前端拿到兑底题即可开始面试，精修完成后 DB 自动覆盖
-                    _sess_id = sess.id
-                    _cand_id = cand.id
-                    _pos_id = pos.id
-                    _cand_name = cand.name
-
-                    def _refine_worker():
-                        """后台异步精修出题：独立 app_context，独立 DB 会话"""
-                        with app.app_context():
-                            try:
-                                from services.interview_service import InterviewService as _IS
-                                from repositories.candidate_repository import CandidateRepository as _CR
-                                from repositories.position_repository import PositionRepository as _PR
-                                _cand = _CR.find_by_id(_cand_id)
-                                _pos = _PR.find_by_id(_pos_id)
-                                _sess = InterviewRepository.find_session_by_id(_sess_id)
-                                if not _cand or not _pos or not _sess:
-                                    logger.warning(f'[v4.1 精修] 对象不存在: cand={_cand_id} pos={_pos_id} sess={_sess_id}')
-                                    return
-                                refined = _IS.generate_questions(
-                                    _pos, _cand, _pos.ai_analysis, _cand.ai_analysis,
-                                    _cand.resume_text,
-                                )
-                                if refined and isinstance(refined, dict) and refined.get('questions'):
-                                    _sess.questions_plan = json.dumps(refined, ensure_ascii=False)
-                                    InterviewRepository.update_session(_sess)
-                                    logger.info(
-                                        f'[v4.1 精修] LLM 出题成功: candidate={_cand_name}, '
-                                        f'session={_sess.id}, questions={len(refined["questions"])}'
-                                    )
-                                else:
-                                    logger.warning(
-                                        f'[v4.1 精修] LLM 返回为空,保留兑底题: '
-                                        f'candidate={_cand_name}, session={_sess.id}'
-                                    )
-                            except Exception as _e:
-                                logger.error(f'[v4.1 精修] LLM 精修异常: candidate={_cand_name}, error={_e}')
-
-                    _refine_thread = threading.Thread(target=_refine_worker, daemon=True)
-                    _refine_thread.start()
-                    logger.info(f'[v4.1] 精修出题已提交后台线程: candidate={_cand_name}, session={_sess_id}')
                 except Exception as e:
                     result_holder['error'] = str(e)
                 finally:

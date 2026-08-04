@@ -78,7 +78,7 @@
 
 <!-- AI 分析结果弹窗 -->
 <!-- 【v3.6.4 二修】aiModal 恢复默认 Bootstrap 黑透明 backdrop，原版设计
-     兑底仍是 v3.6.3 的 hidden.bs.modal 事件 + _purgeModalBackdrops() -->
+     仍采用 v3.6.3 的 hidden.bs.modal 事件 + _purgeModalBackdrops() 清理残留 -->
 <div class="modal fade" id="aiModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -91,6 +91,41 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" id="aiResult"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 【v4.3】分析失败弹窗：明确告诉用户 LLM 评估/出题失败，提供重试按钮 -->
+<div class="modal fade" id="aiFailureModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>AI 分析失败
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">
+                    候选人 <strong id="aiFailureCandidateName"></strong> 的 AI 分析未能完成。
+                </p>
+                <div class="alert alert-warning mb-3">
+                    <i class="bi bi-info-circle me-1"></i>
+                    <strong>v4.3 说明：</strong>已去除兑底题，LLM 调用失败会直接报错，不会出现"出现兑底题以为系统 bug"的现象。
+                </div>
+                <p class="text-muted small mb-1">错误详情：</p>
+                <pre id="aiFailureMessage" class="bg-light p-2 rounded small mb-3" style="white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto;"></pre>
+                <p class="text-muted small mb-0">
+                    <i class="bi bi-lightbulb me-1"></i>
+                    可能原因：LLM 服务忙、简历过长、LLM 返回坏 JSON 被修复后仍为空。
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" id="aiFailureRetryBtn" class="btn btn-primary">
+                    <i class="bi bi-arrow-clockwise me-1"></i>重新评估
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -551,18 +586,18 @@ async function analyzeCandidate(id, btn) {
 
     consumeSSE(`/api/stream/candidate-analysis/${id}`, {
         initialMsg: 'AI 正在分析候选人简历...',
-        initialSub: '【v3.6】基础分(≤2 分钟) → 隐性维度(≤3 分钟) → 完整结果',
+        initialSub: '【v4.3】基础分评估 + LLM 出题（无兑底题，LLM 失败会报错）',
         // 【v3.6.1】partial_complete 只更新角标，不弹 modal
         async onPartial(partialResult /*, payload */) {
             if (!partialResult) return;
             _aiEvalJob.partial = partialResult;
             _aiEvalJob.phase = 'phase2';
             updateAiCornerBadge(
-                `<i class="bi bi-eye"></i> 基础分 <strong>${partialResult.match_score ?? '?'}/100</strong> 已出，隐性维度评估中（≤3 分钟）...`
+                `<i class="bi bi-eye"></i> 基础分 <strong>${partialResult.match_score ?? '?'}/100</strong> 已出，LLM 出题中（≤3 分钟）...`
             );
-            showToast(`✅ ${cand.name} 基础分 ${partialResult.match_score}/100 已出，隐性维度后合中`, 'info');
+            showToast(`✅ ${cand.name} 基础分 ${partialResult.match_score}/100 已出，LLM 出题中`, 'info');
             // 【v3.6.2】partial 出来后自动弹一版 modal 让用户立刻看到基础分。
-            //         用户可以随时关掉 modal，不影响后台隐徃维度评估（角标继续显示进度）。
+            //         用户可以随时关掉 modal，不影响后台 LLM 出题（角标继续显示进度）。
             showAiResult(partialResult, null, { isPartial: true });
         },
         async onComplete(payload) {
@@ -570,14 +605,59 @@ async function analyzeCandidate(id, btn) {
             _aiEvalJob.session = payload.session;
             _aiEvalJob.phase = 'done';
             updateAiCornerBadge(
-                `<i class="bi bi-trophy"></i> 完整评估 <strong>${payload.result.match_score ?? '?'}/100</strong> 完成`,
+                `<i class="bi bi-trophy"></i> 评估 <strong>${payload.result.match_score ?? '?'}/100</strong> + LLM 出题完成`,
                 true
             );
-            showToast(`✅ ${cand.name} 完整评估已完成（${payload.result.match_score} 分），点击角标查看`, 'success');
+            showToast(`✅ ${cand.name} 评估完成（${payload.result.match_score} 分），LLM 出题完成，点击角标查看`, 'success');
             // 后台刷新候选人列表（不阻塞角标交互）
             try { await loadCandidates(); } catch(e) { console.error(e); }
+        },
+        // 【v4.3】LLM 失败 UI：不要兑底题，明确告知用户失败 + 提供重试按钮
+        async onError(message) {
+            _aiEvalJob.phase = 'failed';
+            // 隐藏加载遮罩、隐藏角标
+            hideAiCornerBadge();
+            // 显示失败弹窗（重试按钮 + 错误详情）
+            showAiFailure(cand, message);
         }
     });
+}
+// 【v4.3】分析失败 UI：明确告诉用户 LLM 评估/出题失败，提供重试按钮
+function showAiFailure(cand, message) {
+    const modalEl = document.getElementById('aiFailureModal');
+    if (!modalEl) {
+        // 退化：没有失败 modal 就只用 toast
+        showToast(`❌ ${cand.name} 分析失败: ${message}（请点击「重新评估」重试）`, 'danger', 8000);
+        return;
+    }
+    document.getElementById('aiFailureCandidateName').textContent = cand.name;
+    document.getElementById('aiFailureMessage').textContent = message || '未知错误';
+    document.getElementById('aiFailureRetryBtn').onclick = async () => {
+        // 关闭弹窗 + 重新跑分析
+        bootstrap.Modal.getInstance(modalEl)?.hide();
+        // 先清掉旧 ai_analysis
+        try {
+            await apiCall(`/api/candidates/${cand.id}/ai-analysis`, 'DELETE');
+        } catch(e) { console.error('清除旧结果失败:', e); }
+        // 重新分析
+        analyzeCandidate(cand.id, null);
+    };
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+// 【v4.3】从 partial 评估失败的 alert 里点「重新分析」按钮调用。
+// 与 showAiFailure 不同：本函数是给 partial 阶段作为被点赞使用的，仅从 aiModal 内部调用。
+function retryAiEval() {
+    const job = _aiEvalJob;
+    if (!job || !job.candidateId) {
+        showToast('无法重试：请重新加载页面后再点「AI 评估」', 'danger');
+        return;
+    }
+    // 关闭 aiModal
+    const aiModal = bootstrap.Modal.getInstance(document.getElementById('aiModal'));
+    aiModal?.hide();
+    // 重跑分析
+    analyzeCandidate(job.candidateId, null);
 }
 // 【v3.6.1】角标点击逻辑：根据阶段响应不同
 function onAiBadgeClick() {
@@ -631,66 +711,19 @@ function showAiResult(analysis, session, opts = {}) {
             </div>
         </div>` : '';
 
-    // 【v2.3】如 AI 评估完全失败（三个评估师都返空），但代码层兑底已提供
-    //         matched/missing/strengths/risks。展示兑底结果而不是只有一行话。
+    // 【v4.3 去除代码兑底】如 AI 评估完全失败（三个评估师都返空），不再提供代码兑底关键词扫描。
+    // 用户明确要求：宁愿卡着也不要任何兑底显示。LLM 失败 → 展示统一的「分析失败」提示。
     if (data.llm_fully_failed) {
-        const fbMatched = data.matched_skills || [];
-        const fbMissing = data.missing_skills || [];
-        const fbStrengths = data.strengths || [];
-        const fbRisks = data.risks || [];
         document.getElementById('aiResult').innerHTML = `
             ${partialBanner}
-            <div class="alert alert-warning mt-3">
-                <h6 class="mb-2"><i class="bi bi-exclamation-triangle me-1"></i>AI 智能评估本次未能完成完整评估</h6>
-                <p class="mb-2 small">LLM 服务本次不可达（限流/超时/安全拦截）。以下是基于简历与JD关键词扫描的<strong>代码兑底分析</strong>，可能不如完整 AI 评估精准，但至少能看到关键点。</p>
+            <div class="alert alert-danger mt-3">
+                <h6 class="mb-2"><i class="bi bi-exclamation-octagon me-1"></i>AI 智能评估本次未能完成</h6>
+                <p class="mb-2 small">LLM 服务本次不可达（限流 / 超时 / 安全拦截）。
+                <strong>未提供关键词兑底结果</strong>，请点击下方「重新分析」重试，或稍后再试。</p>
+                <button type="button" class="btn btn-sm btn-outline-danger" onclick="retryAiEval()">
+                    <i class="bi bi-arrow-clockwise me-1"></i>重新分析
+                </button>
             </div>
-
-            <div class="ai-result mt-3">
-                <h6><i class="bi bi-check-circle text-success me-1"></i>匹配技能 <small class="text-muted fw-normal">（代码兑底${fbMatched.length}项）</small></h6>
-                <div class="mb-3">${fbMatched.map(s => {
-                    const name = typeof s === 'string' ? s : s.skill;
-                    const prof = typeof s === 'object' && s.proficiency ? ' (' + s.proficiency + ')' : '';
-                    return `<span class="badge bg-success me-1 mb-1">${name}${prof}</span>`;
-                }).join('') || '<span class="text-muted">未识别到匹配项</span>'}</div>
-
-                <h6><i class="bi bi-x-circle text-danger me-1"></i>缺失技能 <small class="text-muted fw-normal">（代码兑底${fbMissing.length}项）</small></h6>
-                <div class="mb-3">${fbMissing.map(s => {
-                    const name = typeof s === 'string' ? s : s.skill;
-                    const imp = typeof s === 'object' && s.importance ? ' (' + s.importance + ')' : '';
-                    const cls = imp.includes('核心') ? 'danger' : imp.includes('重要') ? 'warning' : 'secondary';
-                    return `<span class="badge bg-${cls} me-1 mb-1">${name}${imp}</span>`;
-                }).join('') || '<span class="text-muted">未识别到缺失项</span>'}</div>
-
-                ${fbStrengths.length > 0 ? `
-                <h6><i class="bi bi-star text-warning me-1"></i>关键优势 <small class="text-muted fw-normal">（代码兑底${fbStrengths.length}项）</small></h6>
-                <ul>${fbStrengths.map(s => {
-                    if (typeof s === 'string') return `<li>${s}</li>`;
-                    return `<li>${s.point}${s.evidence ? ' <small class="text-muted">(' + s.evidence + ')</small>' : ''}</li>`;
-                }).join('')}</ul>` : ''}
-
-                ${fbRisks.length > 0 ? `
-                <h6 class="mt-3"><i class="bi bi-exclamation-triangle text-danger me-1"></i>需关注点 <small class="text-muted fw-normal">（代码兑底${fbRisks.length}项）</small></h6>
-                <ul>${fbRisks.map(r => {
-                    if (typeof r === 'string') return `<li>${r}</li>`;
-                    const sevColor = r.severity === '高' ? 'danger' : r.severity === '中' ? 'warning' : 'secondary';
-                    return `<li><span class="badge bg-${sevColor} me-1">${r.severity || ''}</span>${r.risk}${r.detail ? ' - ' + r.detail : ''}</li>`;
-                }).join('')}</ul>` : ''}
-            </div>
-
-            <div class="alert alert-info mt-3">
-                <i class="bi bi-arrow-clockwise me-1"></i>
-                <strong>提示：</strong>本次为代码兑底结果，并非完整 AI 智能评估。建议：
-                <ol class="mb-0 mt-1 ps-3 small">
-                    <li>几分钟后重试，让完整 AI 评估接管</li>
-                    <li>或点击 <a href="/interview" class="alert-link">前往面试工作台</a> 使用兑底面试题开始面试</li>
-                </ol>
-            </div>
-
-            ${session ? `
-            <div class="alert alert-success">
-                <i class="bi bi-check-circle me-1"></i>
-                <strong>面试会话已生成（兑底题目）</strong>，点击 <a href="/interview" class="alert-link">前往面试工作台</a> 开始面试
-            </div>` : ''}
         `;
         new bootstrap.Modal(document.getElementById('aiModal')).show();
         return;

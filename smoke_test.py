@@ -13,7 +13,7 @@
   J. LLM 接入验证（DeepSeek-v4-Flash + parse_json 兼容）
   K. 【v3.6】隐藏维度异步评估（partial_complete + hidden_done）
   L. 【v4.1】候选人重新评估 DELETE 端点
-  M. 【bugfix】兑底面试题按岗位类型适配（前端不再问 JAVA）
+  （v4.3 已去除 M 节 兑底面试题测试，因为兑底题功能已删除）
 
 使用：
   python smoke_test.py [base_url]
@@ -604,131 +604,6 @@ def test_k_v36_async(opener):
 
 
 # ============================================================================
-# M. 【bugfix】兑底面试题按岗位类型适配
-#   背景：前端开发工程师岗位被兑底题匹配到 JAVA 关键词
-#         （skill_priority 顺序错误 + 未过滤「了解 X 后端更好」修饰词 + 题3/题5 硬编码后端模板）
-# ============================================================================
-def test_m_fallback_position_match():
-    print('\n========== M. 兑底面试题按岗位类型适配 ==========')
-    # ---- 导入 InterviewService ----
-    try:
-        from services.interview_service import InterviewService as _IS
-    except Exception as e:
-        _record('M', '导入 InterviewService', 'FAIL', f'exc={e}')
-        return
-
-    # ---- 静态检查 ----
-    has_detect = hasattr(_IS, '_detect_position_type')
-    has_filter = hasattr(_IS, '_filter_skill_corpus')
-    _record('M', 'InterviewService._detect_position_type 存在',
-            'PASS' if has_detect else 'FAIL')
-    _record('M', 'InterviewService._filter_skill_corpus 存在',
-            'PASS' if has_filter else 'FAIL')
-
-    # ---- 动态检查 ----
-    test_cases = [
-        # (岗位名, tech_requirements, jd_content, 期望类型, 期望题2关键字或None)
-        ('前端开发工程师',
-         'react,vue,javascript,typescript,html5,css3,node.js,webpack,了解java后端更好,加分:docker',
-         '负责 Web 前端架构设计与组件库建设，要求 3 年以上 React/Vue 实战。',
-         'frontend', 'JAVASCRIPT', 'VUE', 'REACT'),
-        ('高级前端工程师',
-         'vue,react,typescript,vite,sass',
-         '电商后台前端，需要复杂组件设计与性能优化能力。',
-         'frontend', 'VUE', 'REACT', None),
-        ('Python 后端开发工程师',
-         'python,django,flask,mysql,redis,celery,docker',
-         '负责后端 API 设计与高并发场景优化。',
-         'backend', None, None, None),
-        ('Java 高级开发工程师',
-         'java,spring boot,mysql,redis,kafka,docker,kubernetes',
-         '负责电商核心交易链路开发，要求 Java 基础扎实。',
-         'backend', 'JAVA', None, None),
-        ('算法工程师（NLP方向）',
-         'python,pytorch,transformer,nlp,推荐系统',
-         '负责大模型预训练与下游任务微调。',
-         'algorithm', None, None, None),
-        ('数据分析师',
-         'sql,hive,spark,python,数仓分层',
-         '负责业务数据看板与深度分析。',
-         'data', None, None, None),
-        ('测试开发工程师',
-         'python,pytest,selenium,postman,jmeter',
-         '负责自动化测试框架建设与质量保障。',
-         'test', None, None, None),
-    ]
-
-    all_pass = True
-    for pos_name, tech, jd, expected_type, *expected_topics in test_cases:
-        expected_topic = expected_topics[0]
-        alternative_topics = [t for t in expected_topics[1:] if t]
-
-        class _P:
-            pass
-        p = _P()
-        p.name = pos_name
-        p.tech_requirements = tech
-        p.jd_content = jd
-        res = _IS.generate_fallback_questions(p)
-        pos_type = res.get('position_type', '?')
-        q2_text = res['questions'][1]['question'].upper()
-        q3_text = res['questions'][2]['question']
-        q5_text = res['questions'][4]['question']
-
-        type_ok = pos_type == expected_type
-
-        # 关键验证：前端/算法/数据/测试岗位绝对不能出现 JAVA 关键词
-        if expected_type in ('frontend', 'algorithm', 'data', 'test'):
-            no_java = not re.search(r'\bJAVA\b', q2_text)
-        else:
-            no_java = True
-
-        # 验证题2 关键词
-        topic_ok = True
-        if expected_topic:
-            topic_ok = (expected_topic in q2_text or
-                        any(t and t in q2_text for t in alternative_topics))
-
-        # 验证题3/题5 必含岗位相关关键词
-        if expected_type == 'frontend':
-            pattern_ok = '前端' in q3_text or '前端' in q5_text
-        elif expected_type == 'algorithm':
-            pattern_ok = '算法' in q3_text or '算法' in q5_text
-        elif expected_type == 'data':
-            pattern_ok = '数据' in q3_text or '数据' in q5_text
-        elif expected_type == 'test':
-            pattern_ok = '自动化' in q3_text or '质量' in q5_text
-        else:  # backend
-            pattern_ok = '数据库' in q3_text or '数据库' in q5_text or '消息队列' in q3_text
-
-        ok = type_ok and no_java and topic_ok and pattern_ok
-        all_pass = all_pass and ok
-
-        detail = f'type={pos_type}'
-        if expected_topic:
-            detail += f' q2_topic={"OK" if topic_ok else "FAIL"}'
-        detail += f' no_java={"OK" if no_java else "FAIL"}'
-        detail += f' pattern={"OK" if pattern_ok else "FAIL"}'
-
-        _record('M', f'{pos_name} 兑底题适配',
-                'PASS' if ok else 'FAIL', detail)
-
-    # ---- 专项验证：前端岗位绝不问 JAVA ----
-    class _FrontendP:
-        name = '前端开发工程师'
-        tech_requirements = 'react,vue,javascript,了解java后端更好,加分:docker,kubernetes'
-        jd_content = '负责 Web 前端架构设计与组件库建设。'
-    res = _IS.generate_fallback_questions(_FrontendP())
-    q2 = res['questions'][1]['question']
-    has_java_question = re.search(r'\bJAVA\b', q2)
-    _record('M', '【关键】前端岗位 Q2 不含 JAVA 关键词',
-            'PASS' if not has_java_question else 'FAIL',
-            f'Q2="{q2[:60]}..."')
-
-    return all_pass
-
-
-# ============================================================================
 # 入口
 # ============================================================================
 def main():
@@ -750,7 +625,6 @@ def main():
     test_i_jinja()
     test_j_llm_integration()
     test_k_v36_async(opener)
-    test_m_fallback_position_match()
 
     print('\n' + '=' * 70)
     print(f'汇总  PASS={STATS["PASS"]}  FAIL={STATS["FAIL"]}  '

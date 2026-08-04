@@ -15,7 +15,6 @@ from utils.auth import login_required
 from utils.audit import log_interview_created, log_operation
 from utils.meta_evaluation_pdf import generate_meta_evaluation_pdf
 import json
-import threading
 
 candidate_bp = Blueprint('candidates', __name__, url_prefix='/api/candidates')
 
@@ -103,12 +102,11 @@ def clear_ai_analysis(id):
 def analyze_candidate(id):
     """AI 分析简历匹配度，并自动生成面试会话
 
-    【v2.1 性能修复】同步只跑简历评估（≈31s）+ 兑底题（<0.5s），保证接口 < 60s：
-      1. 同步调用 ResumeService.analyze_resume（3个评估师并行）
-      2. 同步生成 5 道兑底模板题（纯代码，不调 LLM）
-      3. 立即创建 InterviewSession（status='refining'）并返回
-      4. 后台异步线程调用 InterviewService.generate_questions（LLM 真出题），
-         完成后覆盖 questions_plan 并将 status 改为 'preparing'
+    【v4.3 去除兑底题】
+      用户明确要求：不要兑底题（出现兑底题会以为系统 bug）。
+      本接口不再提供任何兑底题兑底。LLM 出题失败 → 直接返回错误，
+      前端展示「分析失败」UI + 重试按钮。
+      主推荐使用 SSE 流式接口 /api/stream/candidate-analysis/{id}。
     """
     candidate = CandidateRepository.find_by_id(id)
     if not candidate:
@@ -134,29 +132,25 @@ def analyze_candidate(id):
     candidate.match_score = 0 if is_llm_failed else result.get('match_score', 0)
     CandidateRepository.update(candidate)
 
-    # 2. 【v3.6.5 同步保险】同步调用 LLM 真出题（超时 90s），保证返回时 session 一定带上定制题，
-    #    不再依赖不可靠的 daemon Thread（waitress 8 worker 下 daemon thread 时灵时不灵，导致
-    #    session 卡在 preparing 状态 + 兑底题，用户进入实时面试看到恢复兑底题会话的错误现象）。
-    #    90s 以内能拿到 LLM 精修题，就用精修题；拿不到才退回到兑底题并在后台补精修。
-    refined_questions = None
+    # 2. 【v4.3】同步调用 LLM 真出题。失败直接报错，不提供任何兑底题。
     try:
-        logger.info(f'[v3.6.5] 开始同步 LLM 真出题: candidate={candidate.name}')
+        logger.info(f'[v4.3] 开始同步 LLM 真出题: candidate={candidate.name}')
         refined_questions = InterviewService.generate_questions(
             position, candidate,
             position.ai_analysis,
             candidate.ai_analysis,
             candidate.resume_text,
         )
-        if refined_questions and isinstance(refined_questions, dict) and refined_questions.get('questions'):
-            logger.info(
-                f'[v3.6.5] LLM 真出题成功: candidate={candidate.name}, '
-                f'questions={len(refined_questions["questions"])}'
-            )
-        else:
-            refined_questions = None
+        if not (refined_questions and isinstance(refined_questions, dict) and refined_questions.get('questions')):
+            logger.error(f'[v4.3] LLM 出题返回空: candidate={candidate.name}')
+            return error('LLM 出题失败，请稍后重试', 502)
+        logger.info(
+            f'[v4.3] LLM 真出题成功: candidate={candidate.name}, '
+            f'questions={len(refined_questions["questions"])}'
+        )
     except Exception as e:
-        logger.error(f'[v3.6.5] 同步出题异常: candidate={candidate.name}, error={e}')
-        refined_questions = None
+        logger.error(f'[v4.3] 同步出题异常: candidate={candidate.name}, error={e}')
+        return error(f'LLM 出题失败: {e}', 502)
 
     # 3. 【bugfix】创建新 session 前，清理该候选人所有 preparing 状态的旧 session
     # 背景：用户多次点"重新评估"会累积多个 preparing session，前端 restoreActiveSession
@@ -170,94 +164,19 @@ def analyze_candidate(id):
             db.session.delete(old_sess)
             logger.info(f'[bugfix] 清理旧 preparing session: session_id={old_sess.id}, candidate={candidate.name}')
     db.session.commit()
-    
-    # 4. 同步创建 InterviewSession（优先用 LLM 定制题，失败才用底题）
-    if refined_questions:
-        session = InterviewSession(
-            candidate_id=candidate.id,
-            status=SessionStatus.PREPARING,
-            questions_plan=json.dumps(refined_questions, ensure_ascii=False)
-        )
-    else:
-        fallback_questions = InterviewService.generate_fallback_questions(
-            position, candidate.resume_text
-        )
-        session = InterviewSession(
-            candidate_id=candidate.id,
-            status=SessionStatus.PREPARING,
-            questions_plan=json.dumps(fallback_questions, ensure_ascii=False)
-        )
-        # LLM 出题失败，后台异步重试（也给机会出定制题）
-        flask_app = current_app._get_current_object()
-        thread = threading.Thread(
-            target=_refine_questions_async,
-            args=(flask_app, candidate.id, position.id, session.id),
-            daemon=True,
-        )
-        thread.start()
-        logger.info(
-            f'[v3.6.5] 兑底题会话（异步补精修）: candidate={candidate.name}, '
-            f'session={session.id}, thread.is_alive={thread.is_alive()}'
-        )
+
+    # 4. 创建 InterviewSession（仅使用 LLM 定制题，无兑底分支）
+    session = InterviewSession(
+        candidate_id=candidate.id,
+        status=SessionStatus.PREPARING,
+        questions_plan=json.dumps(refined_questions, ensure_ascii=False)
+    )
     InterviewRepository.save_session(session)
     log_interview_created(session, candidate.name)
     log_operation('analyze', 'candidate', candidate.id, candidate.name)
-    logger.info(f'[v3.6.5] 面试会话已创建: candidate={candidate.name}, session={session.id}')
+    logger.info(f'[v4.3] 面试会话已创建: candidate={candidate.name}, session={session.id}')
 
     return success({'analysis': result, 'candidate': candidate.to_dict(), 'session': session.to_dict()})
-
-
-def _refine_questions_async(app, candidate_id, position_id, session_id):
-    """后台线程：异步生成 LLM 精修题目，覆盖兑底题
-
-    Args:
-        app: Flask app 实例（用于在线程里 push app_context）
-        candidate_id: 候选人 ID
-        position_id: 岗位 ID
-        session_id: 会话 ID
-    """
-    # 【v3.6.5】诊断日志：确认 daemon 线程真的能跑。某些 Flask 实例下子线程不生效，
-    # 问题表现为：同步兜底题创建后就停在 preparing，定制题永不写入。
-    logger.info(f'[异步精修] ⏰ 线程入口: candidate_id={candidate_id}, session_id={session_id}')
-    with app.app_context():
-        try:
-            from models.candidate import Candidate
-            from models.position import Position
-            from repositories.candidate_repository import CandidateRepository
-            from repositories.position_repository import PositionRepository
-
-            candidate = CandidateRepository.find_by_id(candidate_id)
-            position = PositionRepository.find_by_id(position_id)
-            if not candidate or not position:
-                logger.error(f'[异步精修] candidate/position 不存在: {candidate_id}/{position_id}')
-                return
-
-            logger.info(f'[异步精修] 开始: candidate={candidate.name}, position={position.name}')
-            refined = InterviewService.generate_questions(
-                position, candidate,
-                position.ai_analysis,
-                candidate.ai_analysis,
-                candidate.resume_text,
-            )
-
-            sess = InterviewRepository.find_session_by_id(session_id)
-            if not sess:
-                logger.error(f'[异步精修] session 不存在: {session_id}')
-                return
-
-            if refined and isinstance(refined, dict) and refined.get('questions'):
-                sess.questions_plan = json.dumps(refined, ensure_ascii=False)
-                logger.info(
-                    f'[异步精修] 完成: candidate={candidate.name}, '
-                    f'questions={len(refined["questions"])}'
-                )
-            else:
-                logger.warning(
-                    f'[异步精修] LLM 未返回有效结果，保留兑底题: candidate={candidate.name}'
-                )
-            InterviewRepository.update_session(sess)
-        except Exception as e:
-            logger.error(f'[异步精修] 异常: candidate_id={candidate_id}, error={e}')
 
 
 @candidate_bp.route('/<int:id>', methods=['DELETE'])
