@@ -1,6 +1,7 @@
 """SSE 流式路由 - 多智能体协作过程实时推送"""
 from flask import Blueprint, Response, stream_with_context, request, current_app
-from extensions import db
+# 【v4.4 拆分】stream_candidate_analysis 不再需要 db（v4.3 的 db.session.delete/commit 已移除），
+# 出题接口 stream_question_generation 由 InterviewRepository 负责 session/db 操作。
 from repositories.candidate_repository import CandidateRepository
 from repositories.position_repository import PositionRepository
 from repositories.interview_repository import InterviewRepository
@@ -170,16 +171,17 @@ def stream_resume_evaluation(candidate_id):
 @stream_bp.route('/candidate-analysis/<int:candidate_id>', methods=['POST'])
 @login_required(role='admin')
 def stream_candidate_analysis(candidate_id):
-    """SSE: 候选人分析全流水线（v4.3 重构【同步简历评估 + LLM 出题，无兑底题】）
+    """SSE: 候选人简历评估流式推送（v4.4 拆分【只跑简历评估，出题改为手动】）
 
-    设计：
+    设计（v4.4 两段式拆分）：
       阶段A 【同步、必须完成】简历评估（3并行 + 1汇总）→ ~30-180s
-      阶段B 【同步】LLM 出题（3出题官 + 选题官）→ ~60-180s
-      【v4.3 重要变更】去除兑底题，用户明确要求不要兑底题
-        原因：兑底题出现会让用户以为系统有 bug
-        方案：LLM 出题失败 → SSE error → 前端「分析失败」UI + 重试按钮
+      【v4.4 重要变更】出题阶段从本接口剥离，独立为流式接口 /api/stream/questions/<id>
+        原因：原先「隐性分析完+出题」塞一个 SSE 流，导致隐性评估完成后被同步出题阶段卡住，
+              用户看不到完整评估结果（modal 不自动弹）。
+        方案：本接口只跑简历评估（含隐性维度），complete 事件立刻弹出 final modal。
+              用户在 final modal 上点「立即出题」按钮，触发独立 SSE 接口 /api/stream/questions/<id>。
 
-    SSE 超时：【v3.3】320s 强制 yield error，超时后设置 stop_event 让 worker 提前退出。
+    SSE 超时：【v3.3】600s 强制 yield error，超时后设置 stop_event 让 worker 提前退出。
     """
     candidate = CandidateRepository.find_by_id(candidate_id)
     if not candidate:
@@ -207,7 +209,6 @@ def stream_candidate_analysis(candidate_id):
         app = current_app._get_current_object()
         result_holder = {
             'resume': None,
-            'session_dict': None,
             'error': None,
             'completed_at_step': None,
             'partial_resume': None,       # 【v3.6】partial 结果（tech+soft）
@@ -219,14 +220,13 @@ def stream_candidate_analysis(candidate_id):
         # 修复：SSE 超时立即 set stop_event，worker 在关键阶段检查并提前退出。
         stop_event = threading.Event()
         # 【v4.3】SSE_TIMEOUT 从 320s 调高到 600s（10 分钟）
-        # 背景：stage A 简历评估 30-60s + stage B 隐性评估 60-150s + stage C 出题 60-180s
-        #       最坏路径合计 390s+，原先 320s 会导致 stage C 出题阶段被误超时。
+        # 【v4.4 拆分】本接口只跑简历评估（不含出题），300s 已充裕；保留 600s 容错。
         SSE_TIMEOUT = 600
         # 前端预警阈值（60s）：此处仅作文档化，实际由前端独立计时。
         SLOW_WARNING_AT = 60
 
         def worker():
-            """后台 worker：跑同步简历评估"""
+            """后台 worker：跑同步简历评估（v4.4 不再跑出题）"""
             # 【v3.6】在 worker 函数顶部直接 inline import，避免让 worker 闪
             # "imports not allowed at top of function" 带来 other-name free variable 问题
             from services.resume_service import ResumeService
@@ -258,68 +258,18 @@ def stream_candidate_analysis(candidate_id):
                         return
                     result_holder['completed_at_step'] = 'resume_eval_done'
 
-                    # 【v3.1】进度推送：汇总师完成 ⇒ 75%
+                    # 【v3.1】进度推送：汇总师完成 ⇒ 95%（不再有出题阶段，简历评估完成后直接到 95%）
                     q.put({'event': 'progress', 'stage': '简历评估',
                            'agent': '简历汇总师',
                            'message': '简历汇总完成',
-                           'percent': 75})
+                           'percent': 95})
 
-                    # 保存简历评估结果（v2.2 LLM 全面失败时 match_score=0）
+                    # 【v4.4 拆分】保存简历评估结果到数据库
+                    # 不再创建 session（出题改为手动触发 /api/stream/questions/<id>）。
                     is_llm_failed = bool(result_holder['resume'].get('llm_fully_failed'))
                     cand.ai_analysis = json.dumps(result_holder['resume'], ensure_ascii=False)
                     cand.match_score = 0 if is_llm_failed else result_holder['resume'].get('match_score', 0)
                     CandidateRepository.update(cand)
-                    
-                    q.put({'event': 'progress', 'stage': '出题',
-                           'agent': 'AI 调度员',
-                           'message': '简历评估完成，开始 LLM 出题...',
-                           'percent': 80})
-                    
-                    # 【v4.3 去除兑底题】LLM 出题同步执行
-                    # 背景：用户明确要求不要兑底题（兑底题出现会以为系统 bug）。
-                    # 修复：去掉 generate_fallback_questions 兑底环节。
-                    #      LLM 出题改为主路径，同步跑 design_questions。
-                    # 失败处理：LLM 出题失败 → SSE error → 前端「分析失败」UI。
-                    from services.interview_service import InterviewService as _IS3
-                    try:
-                        llm_questions = _IS3.generate_questions(
-                            pos, cand, pos.ai_analysis, cand.ai_analysis,
-                            cand.resume_text, on_progress=on_progress,
-                        )
-                    except Exception as _e:
-                        logger.error(f'[v4.3] LLM 出题异常: candidate={cand.name}, error={_e}')
-                        result_holder['error'] = f'LLM 出题失败: {_e}'
-                        return
-                    if not llm_questions or not llm_questions.get('questions'):
-                        logger.error(f'[v4.3] LLM 出题返回空: candidate={cand.name}')
-                        result_holder['error'] = 'LLM 出题返回为空，请检查 LLM 服务后重试'
-                        return
-                    
-                    # 清理旧 preparing session
-                    old_sessions = InterviewRepository.find_sessions_by_candidate(cand.id)
-                    for old_sess in old_sessions:
-                        if old_sess.status == SessionStatus.PREPARING:
-                            old_dialogs = InterviewRepository.find_dialogs_by_session(old_sess.id)
-                            for d in old_dialogs:
-                                db.session.delete(d)
-                            db.session.delete(old_sess)
-                            logger.info(f'[v4.3] 清理旧 preparing session: session_id={old_sess.id}, candidate={cand.name}')
-                    db.session.commit()
-                    
-                    # 创建新 session (含 LLM 出的题)
-                    sess = InterviewSession(
-                        candidate_id=cand.id,
-                        status=SessionStatus.PREPARING,
-                        questions_plan=json.dumps(llm_questions, ensure_ascii=False)
-                    )
-                    InterviewRepository.save_session(sess)
-                    result_holder['session_dict'] = sess.to_dict()
-                    result_holder['completed_at_step'] = 'llm_questions_session_created'
-                    
-                    q.put({'event': 'progress', 'stage': '出题',
-                           'agent': 'AI 调度员',
-                           'message': f'LLM 出题完成，共 {len(llm_questions.get("questions", []))} 题',
-                           'percent': 95})
                 except Exception as e:
                     result_holder['error'] = str(e)
                 finally:
@@ -332,13 +282,13 @@ def stream_candidate_analysis(candidate_id):
         _last_idle_progress = start_time
 
         while True:
-            # 超时控制：超过 320s 强制 yield error
+            # 超时控制：超过 SSE_TIMEOUT 强制 yield error
             elapsed = time.time() - start_time
             if elapsed > SSE_TIMEOUT:
                 # 【v4.2】设置 stop_event，通知 worker 提前退出
                 stop_event.set()
                 result_holder['error'] = (
-                    f'简历分析超过 2 分钟未返回，可能是 LLM 服务忙或简历过长。'
+                    f'简历分析超过 {SSE_TIMEOUT}s 未返回，可能是 LLM 服务忙或简历过长。'
                     f'请稍后重试，或检查网络/服务状态。'
                 )
                 logger.warning(
@@ -395,17 +345,13 @@ def stream_candidate_analysis(candidate_id):
                         'percent': 72,
                     })
 
+        # 【v4.4 拆分】complete 事件不再带 session（session 由独立出题接口 /api/stream/questions 创建）
         if result_holder['error']:
             yield _sse_event('error', {'message': result_holder['error']})
         elif result_holder['resume']:
-            session_dict = result_holder.get('session_dict')
-            if session_dict:
-                created_session = InterviewRepository.find_session_by_id(session_dict.get('id'))
-                if created_session:
-                    log_interview_created(created_session, candidate.name)
             yield _sse_event('complete', {
                 'result': result_holder['resume'],
-                'session': session_dict,
+                'session': None,  # 【v4.4】出题未执行，session 留空，前端弹「立即出题」按钮
             })
         else:
             yield _sse_event('error', {'message': '候选人分析失败'})

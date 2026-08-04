@@ -14,6 +14,7 @@
   K. 【v3.6】隐藏维度异步评估（partial_complete + hidden_done）
   L. 【v4.1】候选人重新评估 DELETE 端点
   （v4.3 已去除 M 节 兑底面试题测试，因为兑底题功能已删除）
+  M. 【v4.4】两段式拆分：简历评估 + 出题手动触发（隐性完成不再被出题阶段卡住）
 
 使用：
   python smoke_test.py [base_url]
@@ -604,6 +605,112 @@ def test_k_v36_async(opener):
 
 
 # ============================================================================
+# M. 【v4.4】两段式拆分：简历评估 + 出题手动触发
+# ============================================================================
+def test_m_v44_split(opener):
+    """v4.4 拆分验证
+
+    设计：
+      - stream_candidate_analysis 只跑简历评估（不再调 design_questions）
+      - complete 事件 payload.session 为 None
+      - 前端 candidates.html startQuestionDesign 函数存在，调 /api/stream/questions/<id> 独立出题
+      - showAiResult 根据 session 是否存在切换「立即出题」/「前往面试工作台」按钮
+    """
+    print('\n========== M. v4.4 两段式拆分 ==========')
+
+    stream_src = open('routes/stream_routes.py', encoding='utf-8').read()
+    candidates_src = open('templates/candidates.html', encoding='utf-8').read()
+
+    items = {
+        # 后端：stream_candidate_analysis 不再调用 generate_questions
+        'routes/stream_routes.py stream_candidate_analysis 文档含【v4.4 拆分】':
+            'v4.4 拆分' in stream_src and '只跑简历评估' in stream_src,
+        'routes/stream_routes.py 移除了 InterviewService.generate_questions 调用（拆分后）':
+            # worker 中不应再出现 generate_questions
+            'llm_questions = _IS3.generate_questions' not in stream_src,
+        'routes/stream_routes.py complete 事件 session=None':
+            "'session': None" in stream_src,
+        'routes/stream_routes.py worker 中不再出现 db.session.delete / db.session.commit 代码':
+            # 去掉注释行后再匹配（避开描述性注释中的“db.session.delete 已移除”）
+            (lambda code: 'db.session.delete' not in code and 'db.session.commit' not in code)(
+                '\n'.join(line for line in stream_src.splitlines() if not line.lstrip().startswith('#'))
+            ),
+        'routes/stream_routes.py 不再 from extensions import db':
+            'from extensions import db' not in stream_src,
+
+        # 前端：拆分后的两个 SSE 调用 + startQuestionDesign
+        'candidates.html startQuestionDesign 函数定义':
+            'async function startQuestionDesign' in candidates_src,
+        'candidates.html 「立即出题」按钮 HTML':
+            '立即出题' in candidates_src and 'aiStartQuestionBtn' in candidates_src,
+        'candidates.html 「前往面试工作台」按钮':
+            '前往面试工作台' in candidates_src,
+        'candidates.html startQuestionDesign 调 /api/stream/questions/<id>':
+            '/api/stream/questions/${candidateId}' in candidates_src,
+        'candidates.html analyzeCandidate onComplete 立刻弹 final modal（不含 session）':
+            ('partialModalInstance.hide()' in candidates_src
+             and '_aiEvalJob.session = payload.session || null' in candidates_src),
+        'candidates.html 初脚台 + 手动出题按钮文档子串':
+            '【v4.4】两段式拆分' in candidates_src,
+
+        # 后端：独立出题接口仍存在（复用 interview.html 也在用的 /api/stream/questions/<id>）
+        'routes/stream_routes.py stream_question_generation 接口仍存在':
+            "def stream_question_generation(candidate_id):" in stream_src,
+    }
+    for name, ok in items.items():
+        _record('M', name, 'PASS' if ok else 'FAIL')
+
+    # 动态验证（可选：RUN_V44=1）
+    if os.environ.get('RUN_V44') == '1':
+        try:
+            import requests as _rq
+            sess = _rq.Session()
+            sess.post(f'{BASE}/api/auth/login',
+                      json={'username': ADMIN_USER, 'password': ADMIN_PASS},
+                      timeout=15)
+            pos_list = sess.get(f'{BASE}/api/positions').json().get('data') or []
+            if not pos_list:
+                _record('M', 'v4.4 动态：缺少岗位', 'SKIP', '请先创建岗位')
+                return
+            pos = pos_list[0]
+            c = sess.post(f'{BASE}/api/candidates', json={
+                'name': 'v44-smoke',
+                'position_id': pos['id'],
+                'resume_text': 'Python 后端 5 年。熟悉 Django、MySQL、Redis、Docker。'
+            }).json()
+            cid = c['data']['id']
+            try:
+                # 调拆分后的简历评估接口，看 complete 事件 session 是否为 None
+                complete_payload = None
+                t0 = __import__('time').time()
+                resp = sess.post(f'{BASE}/api/stream/candidate-analysis/{cid}',
+                                 stream=True, timeout=320)
+                for raw in resp.iter_lines(decode_unicode=True):
+                    if not raw or not raw.startswith('data: '):
+                        continue
+                    p = __import__('json').loads(raw[6:])
+                    if p.get('event') == 'complete':
+                        complete_payload = p
+                        break
+                elapsed = __import__('time').time() - t0
+                _record('M', '动态: complete 事件 payload.session = None（拆分生效）',
+                        'PASS' if complete_payload and complete_payload.get('session') is None else 'FAIL',
+                        f'session={complete_payload.get("session") if complete_payload else "NULL"} elapsed={elapsed:.1f}s')
+                _record('M', '动态: complete.result.match_score 存在',
+                        'PASS' if complete_payload and complete_payload.get('result', {}).get('match_score') is not None else 'FAIL',
+                        f'score={complete_payload.get("result", {}).get("match_score") if complete_payload else "?"}')
+            finally:
+                try:
+                    sess.delete(f'{BASE}/api/candidates/{cid}')
+                except Exception:
+                    pass
+        except Exception as e:
+            _record('M', 'v4.4 动态验证', 'FAIL', str(e)[:80])
+    else:
+        _record('M', '动态 v4.4 拆分验证（可选 RUN_V44=1）', 'SKIP')
+
+
+# ============================================================================
 # 入口
 # ============================================================================
 def main():
@@ -625,6 +732,7 @@ def main():
     test_i_jinja()
     test_j_llm_integration()
     test_k_v36_async(opener)
+    test_m_v44_split(opener)
 
     print('\n' + '=' * 70)
     print(f'汇总  PASS={STATS["PASS"]}  FAIL={STATS["FAIL"]}  '
