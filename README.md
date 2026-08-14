@@ -122,6 +122,12 @@ bash deploy/log.sh        # 看日志
 
 ## 界面预览
 
+### 首页 Dashboard
+
+数据统计卡片 + 功能模块入口 + 多智能体协作流程图。
+
+![首页 Dashboard](screenshots/dashboard.png)
+
 ### 候选人管理
 
 按岗位分组展示候选人，支持 AI 评估、匹配度排序、面试状态跟踪。
@@ -132,8 +138,4 @@ bash deploy/log.sh        # 看日志
 
 面试官与候选人实时对话，AI 实时分析回答质量并给出追问建议。
 
-![实时面试](screenshots/7a4cd8c3e533297dbd48d2516bb158d9.png)
-
-![候选人管理 2](screenshots/d66f316f79b9ce2007959959e14e2252.png)
-
-![实时面试 2](screenshots/48b216dc179f2f3e63fa8aac0d0e1cfc.png)
+![实时面试工作台](screenshots/7a4cd8c3e533297dbd48d2516bb158d9.png)
