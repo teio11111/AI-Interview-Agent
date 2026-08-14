@@ -29,6 +29,32 @@ class Config:
     LLM_MODEL = os.getenv('LLM_MODEL', 'gpt-3.5-turbo')
     LLM_TIMEOUT = int(os.getenv('LLM_TIMEOUT', '90'))
 
+    # xiaozhi-unity 原生 WebSocket 桥接服务
+    XIAOZHI_WS_HOST = os.getenv('XIAOZHI_WS_HOST', '0.0.0.0')
+    XIAOZHI_WS_PORT = int(os.getenv('XIAOZHI_WS_PORT', '8089'))
+    XIAOZHI_WS_PATH = os.getenv('XIAOZHI_WS_PATH', '/xiaozhi/v1/')
+    XIAOZHI_ACCESS_TOKEN = os.getenv('XIAOZHI_ACCESS_TOKEN', 'test-token')
+    XIAOZHI_INPUT_SAMPLE_RATE = int(os.getenv('XIAOZHI_INPUT_SAMPLE_RATE', '16000'))
+    XIAOZHI_OUTPUT_SAMPLE_RATE = int(os.getenv('XIAOZHI_OUTPUT_SAMPLE_RATE', '24000'))
+    XIAOZHI_FRAME_DURATION_MS = int(os.getenv('XIAOZHI_FRAME_DURATION_MS', '60'))
+    XIAOZHI_LLM_API_URL = os.getenv(
+        'XIAOZHI_LLM_API_URL',
+        os.getenv('LLM_API_URL', 'https://api.openai.com/v1/chat/completions'),
+    )
+    XIAOZHI_LLM_API_KEY = os.getenv('XIAOZHI_LLM_API_KEY', os.getenv('LLM_API_KEY', ''))
+    XIAOZHI_LLM_MODEL = os.getenv('XIAOZHI_LLM_MODEL', os.getenv('LLM_MODEL', 'gpt-3.5-turbo'))
+    XIAOZHI_LLM_TIMEOUT = int(os.getenv('XIAOZHI_LLM_TIMEOUT', '90'))
+    XIAOZHI_TTS_ENABLED = os.getenv('XIAOZHI_TTS_ENABLED', '1') == '1'
+    XIAOZHI_TTS_VOICE = os.getenv('XIAOZHI_TTS_VOICE', 'zh-CN-XiaoxiaoNeural')
+    XIAOZHI_MAX_HISTORY = int(os.getenv('XIAOZHI_MAX_HISTORY', '12'))
+    XIAOZHI_MAX_MESSAGE_SIZE = int(os.getenv('XIAOZHI_MAX_MESSAGE_SIZE', str(2 * 1024 * 1024)))
+    XIAOZHI_SSL_CERT = os.getenv('XIAOZHI_SSL_CERT', '')
+    XIAOZHI_SSL_KEY = os.getenv('XIAOZHI_SSL_KEY', '')
+    XIAOZHI_INTERVIEW_ROLE = os.getenv('XIAOZHI_INTERVIEW_ROLE', '技术面试官')
+    XIAOZHI_POSITION_NAME = os.getenv('XIAOZHI_POSITION_NAME', '')
+    XIAOZHI_POSITION_REQUIREMENTS = os.getenv('XIAOZHI_POSITION_REQUIREMENTS', '')
+    XIAOZHI_RESUME_TEXT = os.getenv('XIAOZHI_RESUME_TEXT', '')
+
     # 文件上传配置
     MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 

@@ -35,6 +35,7 @@ def create_app():
     from routes.stream_routes import stream_bp
     from routes.asr_routes import asr_bp
     from routes.audit_routes import audit_bp
+    from routes.mobile_routes import mobile_bp
     app.register_blueprint(auth_bp)
     app.register_blueprint(home_bp)
     app.register_blueprint(position_bp)
@@ -43,6 +44,7 @@ def create_app():
     app.register_blueprint(stream_bp)
     app.register_blueprint(asr_bp)
     app.register_blueprint(audit_bp)
+    app.register_blueprint(mobile_bp)
 
     # 导入所有模型并创建表
     with app.app_context():

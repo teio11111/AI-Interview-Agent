@@ -1,0 +1,6 @@
+# xiaozhi-unity 移动端 WebSocket 后端额外依赖
+# 主项目依赖仍需先安装：python -m pip install -r deploy/requirements_full.txt
+websockets==15.0.1
+av==18.1.0
+edge-tts==7.2.8
+imageio-ffmpeg==0.6.0

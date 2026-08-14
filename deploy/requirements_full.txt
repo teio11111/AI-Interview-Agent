@@ -17,3 +17,8 @@ greenlet==3.5.3
 gevent==24.10.3
 gevent-websocket==0.10.1
 reportlab==4.4.4
+# xiaozhi-unity 原生 WebSocket 协议桥接
+websockets==15.0.1
+av==18.1.0
+edge-tts==7.2.8
+imageio-ffmpeg==0.6.0
