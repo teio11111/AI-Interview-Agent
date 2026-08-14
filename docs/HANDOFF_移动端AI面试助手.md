@@ -14,14 +14,14 @@ HTTP 路径（mobile_routes.py）和 WebSocket 路径（xiaozhi_bridge.py）的*
 
 ## 项目位置
 
-- 仓库根：`c:\Users\Teio\Desktop\AI-Interview-Agent\`
+- 仓库根：`./AI-Interview-Agent/`
 - **HTTP 接口**（方案 A，按计划）：`routes/mobile_routes.py`（4 个接口）
 - **WebSocket 接口**（方案 B，xiaozhi-unity 默认模式）：`services/xiaozhi_bridge.py`
 - **依赖清单**：`requirements_xiaozhi.txt`（WebSocket 路径额外依赖）
 - **端到端测试**：
   - `tests/test_mobile_e2e.py` — HTTP 路径（positions/questions/chat/result）✅ 已入库
   - `_local_e2e.py` — WebSocket 路径（ASR+LLM+TTS，需先 `python services/xiaozhi_bridge.py` 启动）⚠ 被 .gitignore 排除，本地保留
-- **详细计划**：`C:\Users\Teio\AppData\Roaming\QoderCN\SharedClientCache\cache\plans\移动端_AI_面试助手实施计划_e40cf199.md`
+- 详细计划：`docs/plan_mobile.md`（本地保留，未入库）
 
 ---
 
