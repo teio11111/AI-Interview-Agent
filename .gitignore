@@ -35,6 +35,10 @@ test_*.py
 _*.py
 _*.txt
 _*.png
+_*.wav
+_*.m4a
+# 本地联调录音样本（不入库，避免 PR 加二进制 diff）
+new_voice*.wav
 # 【v4.1 演示前】但 tests/ 目录下的单元测试是正式代码，不应被上面规则排除
 !tests/
 !tests/test_*.py

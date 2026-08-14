@@ -36,6 +36,70 @@ mobile_bp = Blueprint('mobile', __name__, url_prefix='/api/mobile')
 
 
 # ============================================================
+# 评分提取（鲁棒版）
+# ============================================================
+def _extract_score(feedback: dict | None) -> int:
+    """从 LLM 返回的 feedback dict 里提取 1-10 的分数，多层兜底。
+
+    LLM 真实返回结构很不稳定（MiniMax-M3 / DeepSeek-R1），常见：
+      1) {score: 7, ...}                      —— 顶层有 score
+      2) {feedback: {score: 7, ...}, ...}     —— 嵌套 feedback 子字段
+      3) {score: '', score_breakdown: {...}}  —— score 空，从 breakdown 平均
+      4) {score_tech: 7, score_soft: 6}       —— 只有顾问分，按 6:4 加权
+      5) {answer_quality: '一般'}             —— 字符串兜底映射
+
+    Returns:
+        int: 1-10 的分数，无法提取时返回 5
+    """
+    if not isinstance(feedback, dict):
+        return 5
+
+    # 第 1 优先：顶层 score（数值或可解析为数字的字符串）
+    raw = feedback.get('score')
+    if raw in (None, '', 0):
+        raw = None
+    elif isinstance(raw, (int, float, str)):
+        # 无法转为数字的（如 'abc'、'unknown'）也视为无效，继续回退
+        try:
+            float(raw)
+        except (ValueError, TypeError):
+            raw = None
+
+    # 第 2 优先：嵌套 feedback 子字段
+    if raw is None and isinstance(feedback.get('feedback'), dict):
+        raw = feedback['feedback'].get('score')
+        if raw in (None, '', 0):
+            raw = None
+
+    # 第 3 优先：score_breakdown 五维平均
+    if raw is None and isinstance(feedback.get('score_breakdown'), dict):
+        nums = [v for v in feedback['score_breakdown'].values()
+                if isinstance(v, (int, float))]
+        if nums:
+            raw = round(sum(nums) / len(nums))
+
+    # 第 4 优先：score_tech / score_soft 按 6:4 加权
+    if raw is None:
+        tech = feedback.get('score_tech')
+        soft = feedback.get('score_soft')
+        if isinstance(tech, (int, float)) and isinstance(soft, (int, float)):
+            raw = round(tech * 0.6 + soft * 0.4)
+
+    # 第 5 优先：answer_quality 文本映射
+    if raw is None:
+        q = (feedback.get('answer_quality') or '').strip()
+        quality_map = {'优秀': 8, '良好': 7, '一般': 5, '较差': 3, '差': 2}
+        if q in quality_map:
+            raw = quality_map[q]
+
+    # 裁剪到 1-10
+    try:
+        return max(1, min(10, int(round(float(raw)))))
+    except (ValueError, TypeError):
+        return 5
+
+
+# ============================================================
 # 演示鉴权：X-Demo-Token 头（生产替换为 OAuth / JWT）
 # ============================================================
 def _expected_token() -> str:
@@ -270,13 +334,17 @@ def mobile_chat():
     elapsed = round(time.time() - t0, 1)
     logger.info(f'[mobile/chat] 反馈完成 耗时 {elapsed}s')
 
-    # 评分裁剪
-    if feedback and isinstance(feedback, dict):
-        if 'score' in feedback:
-            try:
-                feedback['score'] = max(1, min(10, int(feedback['score'])))
-            except (ValueError, TypeError):
-                feedback['score'] = 5
+    # 评分提取（鲁棒版，从顶层 score / 嵌套 feedback / score_breakdown / 顾问分 / 文本 顺序回退）
+    if not feedback:
+        feedback = {
+            'score': 5,
+            'answer_quality': '待评估',
+            'evaluation': 'AI 暂时不可用，请继续回答下一题。',
+            'follow_up_questions': []
+        }
+    score = _extract_score(feedback)
+    if isinstance(feedback, dict):
+        feedback['score'] = score   # 同步写回顶层，方便客户端/调试
 
     # 存对话
     dialog = InterviewDialog(
@@ -289,18 +357,10 @@ def mobile_chat():
     )
     InterviewRepository.save_dialog(dialog)
 
-    # 兜底
-    if not feedback:
-        feedback = {
-            'score': 5,
-            'answer_quality': '待评估',
-            'evaluation': 'AI 暂时不可用，请继续回答下一题。',
-            'follow_up_questions': []
-        }
-
     return success({
         'dialog_id': dialog.id,
         'seq': dialog.seq,
+        'score': score,             # 【新增】顶层 score，客户端可直接读
         'feedback': feedback,
         'elapsed': elapsed
     })
