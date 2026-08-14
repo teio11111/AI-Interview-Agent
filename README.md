@@ -128,14 +128,14 @@ bash deploy/log.sh        # 看日志
 
 ![首页 Dashboard](screenshots/dashboard.png)
 
+### 岗位管理
+
+创建岗位、AI 解析 JD、技能矩阵、重新分析。
+
+![岗位管理](screenshots/岗位.png)
+
 ### 候选人管理
 
 按岗位分组展示候选人，支持 AI 评估、匹配度排序、面试状态跟踪。
 
-![候选人管理](screenshots/9d754330004265269019b8927bd34421.png)
-
-### 实时面试工作台
-
-面试官与候选人实时对话，AI 实时分析回答质量并给出追问建议。
-
-![实时面试工作台](screenshots/7a4cd8c3e533297dbd48d2516bb158d9.png)
+![候选人管理](screenshots/候选人.png)
